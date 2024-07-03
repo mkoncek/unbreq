@@ -1,0 +1,66 @@
+= Unbreq -- Detector of unused `BuildRequires` of RPM builds.
+
+== Building
+
+This project requires `librpm`.
+
+To compile, simply run:
+
+....
+make all
+....
+
+== Usage
+
+NOTE: This project is in a very early stage.
+
+In order to use it from mock builds:
+
+. build the project
++
+....
+make -j8
+....
+
+. place the compiled library and the program somewhere into the buildroot (for example into `/usr/local/lib64`)
++
+....
+cp -t /var/lib/mock/fedora-rawhide-x86_64/root/usr/local/lib64 target/*
+....
+
+. edit the `.spec` file
+
+.. use `LD_PRELOAD` immediately after the `%setup` of `%prep` and the `%build` build step
++
+....
+%prep
+%setup -q ...
+export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
+...
+
+%build
+export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
+....
+
+.. at the end of `%install` step, manually execute the compiled program
++
+....
+%install
+...
+/usr/local/lib64/resolve
+....
+
+. after building, you can see the output, for example:
++
+....
+...
+[INFO] Installation successful
+...
++ /usr/local/lib64/resolve
+warning: BuildRequires asciidoc is not needed
+...
+....
+
+== TODO
+
+Transitive `Requires` of `BuildRequires`.
