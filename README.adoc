@@ -30,7 +30,7 @@ cp -t /var/lib/mock/fedora-rawhide-x86_64/root/usr/local/lib64 target/*
 
 . edit the `.spec` file
 
-.. use `LD_PRELOAD` immediately after the `%setup` of `%prep` and the `%build` build step
+.. use `LD_PRELOAD` immediately after the `%setup` of `%prep`, the `%build` and the `%check` (if present) build step
 +
 ....
 %prep
@@ -40,12 +40,17 @@ export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
 
 %build
 export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
+...
+
+%check
+export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
+...
 ....
 
-.. at the end of `%install` step, manually execute the compiled program
+.. at the end of the `%check` step, manually execute the compiled program
 +
 ....
-%install
+%check
 ...
 /usr/local/lib64/resolve
 ....
