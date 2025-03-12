@@ -16,8 +16,10 @@
 #include <stdexcept>
 #include <map>
 #include <vector>
+#include <variant>
+#include <span>
 
-#include "shared.h"
+#include "shared.hpp"
 
 struct File_desctiptor
 {
@@ -84,6 +86,44 @@ struct RPM_dependency_set
 	}
 };
 
+struct String_vec : std::variant<std::string, std::vector<std::string>>
+{
+	std::span<const std::string> span() const noexcept
+	{
+		if (auto* string = std::get_if<std::string>(this))
+		{
+			return std::span(string, 1);
+		}
+		else
+		{
+			return std::get<std::vector<std::string>>(*this);
+		}
+	}
+	
+	void push_back(std::string string)
+	{
+		if (auto* this_string = std::get_if<std::string>(this))
+		{
+			auto first = std::move(*this_string);
+			auto self_vec = this->emplace<std::vector<std::string>>(2);
+			self_vec[0] = std::move(first);
+			self_vec[1] = std::move(string);
+		}
+		else
+		{
+			auto& self_vec = std::get<std::vector<std::string>>(*this);
+			if (self_vec.empty())
+			{
+				this->emplace<std::string>(std::move(string));
+			}
+			else
+			{
+				self_vec.push_back(std::move(string));
+			}
+		}
+	}
+};
+
 using Files_map = std::map<std::string_view, std::vector<std::string>>;
 using Whatprovides_map = std::map<std::string, std::vector<Files_map::iterator>>;
 
@@ -94,8 +134,7 @@ static auto static_files_it = Files_map::iterator();
 
 static int callback_package_list([[maybe_unused]] QVA_t qva, rpmts ts, Header h)
 {
-	rpmfiFlags fiflags = (RPMFI_NOHEADER | RPMFI_FLAGS_QUERY | RPMFI_NOFILEDIGESTS);
-	auto fi = rpmfiNew(ts, h, RPMTAG_BASENAMES, fiflags);
+	auto fi = rpmfiNew(ts, h, RPMTAG_BASENAMES, RPMFI_NOHEADER | RPMFI_FLAGS_QUERY | RPMFI_NOFILEDIGESTS);
 	fi = rpmfiInit(fi, 0);
 	while (rpmfiNext(fi) >= 0)
 	{
@@ -107,7 +146,7 @@ static int callback_package_list([[maybe_unused]] QVA_t qva, rpmts ts, Header h)
 
 static int callback_what_provides([[maybe_unused]] QVA_t qva, rpmts ts, Header h)
 {
-	auto td = rpmtd_s {};
+	auto td = rpmtd_s();
 	if (headerGet(h, RPMTAG_NVRA, &td, HEADERGET_EXT) == 0)
 	{
 		std::clog << "no nvra" << "\n";
@@ -167,8 +206,8 @@ int main()
 		}
 	}
 	
-	auto it = std::filesystem::directory_iterator("/builddir/build/SRPMS");
-	auto&& srpm = *it;
+	// auto it = std::filesystem::directory_iterator("/builddir/build/SRPMS");
+	auto srpm = *std::filesystem::directory_iterator("/var/lib/mock/fedora-rawhide-x86_64/root/builddir/build/SRPMS");
 	
 	{
 		auto ts = RPM_transaction::create();
@@ -190,7 +229,7 @@ int main()
 			while (rpmdsNext(ds) >= 0)
 			{
 				auto ts = RPM_transaction::create();
-				if (auto error = rpmtsSetRootDir(ts, "/"); error != 0)
+				if (auto error = rpmtsSetRootDir(ts, "/var/lib/mock/fedora-rawhide-x86_64/root"); error != 0)
 				{
 					std::clog << "rpm error rpmtsSetRootDir: " << error << "\n";
 				}
@@ -222,6 +261,7 @@ int main()
 				free(args.qva_queryFormat);
 			}
 		}
+		
 		headerFree(h);
 	}
 	
@@ -256,6 +296,26 @@ int main()
 		if (not is_needed)
 		{
 			rpmlog(RPMLOG_WARNING, "BuildRequires %s is not needed\n", provides.first.c_str());
+		}
+	}
+	
+	for (auto& entry : static_files)
+	{
+		std::cout << entry.first << "\n";
+		for (auto& second : entry.second)
+		{
+			std::cout << "\t" << second << "\n";
+		}
+	}
+	
+	std::cout << "#######" << "\n";
+	
+	for (auto& entry : static_whatprovides)
+	{
+		std::cout << entry.first << "\n";
+		for (auto second : entry.second)
+		{
+			std::cout << "\t" << second->first << "\n";
 		}
 	}
 	

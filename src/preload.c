@@ -29,7 +29,6 @@ static int (*cexecvpe)(const char* file, char* const argv[], char* const envp[])
 __attribute__((constructor))
 static void constructor(void)
 {
-	copen = dlsym(RTLD_NEXT, "open");
 	copen64 = dlsym(RTLD_NEXT, "open64");
 	copenat = dlsym(RTLD_NEXT, "openat");
 	copenat64 = dlsym(RTLD_NEXT, "openat64");
@@ -67,6 +66,10 @@ static void record_path(const char* path)
 
 int open(const char* file, int oflag, ...)
 {
+	if (copen != NULL)
+	{
+		copen = dlsym(RTLD_NEXT, "open");
+	}
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -81,6 +84,10 @@ int open(const char* file, int oflag, ...)
 
 int open64(const char* file, int oflag, ...)
 {
+	if (copen64 != NULL)
+	{
+		copen64 = dlsym(RTLD_NEXT, "open64");
+	}
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -125,6 +132,10 @@ int openat64(int fd, const char* file, int oflag, ...)
 
 int execve(const char* path, char* const argv[], char* const envp[])
 {
+	if (cexecve != NULL)
+	{
+		cexecve = dlsym(RTLD_NEXT, "execve");
+	}
 	record_path(path);
 	return cexecve(path, argv, envp);
 }
@@ -139,6 +150,10 @@ int fexecve(int fd, char* const argv[], char* const envp[])
 
 int execv(const char* path, char* const argv[])
 {
+	if (cexecv != NULL)
+	{
+		cexecv = dlsym(RTLD_NEXT, "execv");
+	}
 	record_path(path);
 	return cexecv(path, argv);
 }
