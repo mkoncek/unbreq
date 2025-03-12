@@ -2,10 +2,11 @@ all: target/libunbreq.so target/resolve
 
 CC ?= cc
 CXX ?= c++
-CFLAGS ?= -Wall -Wextra -Wconversion -Wno-varargs -Og -g
+CFLAGS ?= -Wall -Wextra -Wconversion -Wno-varargs -Og -g -fsanitize=address,undefined
 CFLAGS += -std=c99
-CXXFLAGS ?= -Wall -Wextra -Wpedantic -Wconversion -Og -g
+CXXFLAGS ?= -Wall -Wextra -Wpedantic -Wconversion -Og -g -fsanitize=address,undefined
 CXXFLAGS += -std=c++2a
+LDFLAGS ?= -fsanitize=address,undefined
 LDLIBS += -lrpm -lrpmio -lrpmbuild
 
 clean:

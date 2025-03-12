@@ -24,10 +24,10 @@ static void checked_close(int fd)
 	}
 }
 
-void run_fanotify(std::stop_token stop_token, std::string& error, std::set<std::string>& names, int fd, std::string_view mock_root) noexcept
+void run_fanotify(std::stop_token stop_token, std::string& error, std::set<std::string>& names, int fd, const std::string& mock_root) noexcept
 try
 {
-	auto buf = std::array<char, 1024 * 128>();
+	alignas(fanotify_event_metadata) auto buf = std::array<unsigned char, sizeof(fanotify_event_metadata) * 32>();
 	
 	std::clog << "[INFO] fanotify running..." << "\n";
 	
@@ -44,18 +44,18 @@ try
 			continue;
 		}
 		
-		auto mount_fd = open(".", O_DIRECTORY | O_RDONLY);
-		if (mount_fd == -1)
+		auto mount_fd = std::experimental::make_unique_resource_checked(open(mock_root.c_str(), O_DIRECTORY | O_RDONLY), -1, &checked_close);
+		if (mount_fd.get() == -1)
 		{
 			throw std::format("open {} failed: {}", "\".\"", std::strerror(errno));
 		}
-		auto mount_fd_owner = std::experimental::unique_resource(mount_fd, &checked_close);
 		
 		auto procfd_path = std::array<char, PATH_MAX>();
 		const auto procfd_end = std::ranges::copy(std::string_view("/proc/self/fd/"), std::data(procfd_path)).out;
 		
-		for (fanotify_event_metadata* metadata = std::bit_cast<fanotify_event_metadata*>(std::data(buf));
-			not stop_token.stop_requested() && FAN_EVENT_OK(metadata, len); metadata = FAN_EVENT_NEXT(metadata, len))
+		for (fanotify_event_metadata* const metadata = std::bit_cast<fanotify_event_metadata*>(std::data(buf));
+			not stop_token.stop_requested() && FAN_EVENT_OK(metadata, len);
+			std::copy(reinterpret_cast<unsigned char*>(FAN_EVENT_NEXT(metadata, len)), std::begin(buf) + len, std::begin(buf)))
 		{
 			if (metadata->vers != FANOTIFY_METADATA_VERSION) [[unlikely]]
 			{
@@ -81,7 +81,7 @@ try
 				throw std::format("received unexpected event info type");
 			}
 			
-			auto event_fd = open_by_handle_at(mount_fd, file_handle, O_RDONLY);
+			auto event_fd = open_by_handle_at(mount_fd.get(), file_handle, O_RDONLY);
 			if (event_fd == -1)
 			{
 				// File handle is no longer valid, we do not care
@@ -123,6 +123,21 @@ catch (std::string& ex)
 	error = std::move(ex);
 }
 
+struct Fanotify : std::experimental::unique_resource<int, void(*)(int)>
+{
+	Fanotify(unsigned int flags, unsigned int event_flags)
+		:
+		std::experimental::unique_resource<int, void(*)(int)>::unique_resource(
+			std::experimental::make_unique_resource_checked(fanotify_init(flags, event_flags), -1, &checked_close)
+		)
+	{
+		if (get() == -1)
+		{
+			throw std::runtime_error(std::format("fanotify_init failed: {}", std::strerror(errno)));
+		}
+	}
+};
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] const char** argv)
 {
 	if (argc != 2)
@@ -133,20 +148,13 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] const char** argv)
 	
 	auto mock_root = std::string(argv[1]);
 	
-	auto fd = fanotify_init(
+	auto fanotify = Fanotify(
 		FAN_CLASS_NOTIF | FAN_CLOEXEC | FAN_REPORT_DFID_NAME /* | FAN_NONBLOCK */,
 		O_RDONLY | O_LARGEFILE
 	);
-	if (fd == -1)
-	{
-		std::clog << "fanotify_init: " << std::strerror(errno) << "\n";
-		return 1;
-	}
-	
-	auto fd_owner = std::experimental::unique_resource(fd, &checked_close);
 	
 	if (fanotify_mark(
-		fd,
+		fanotify.get(),
 		FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
 		FAN_ACCESS | FAN_MODIFY | FAN_CLOSE_WRITE | FAN_CLOSE_NOWRITE | FAN_OPEN | FAN_OPEN_EXEC,
 		AT_FDCWD,
@@ -160,7 +168,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] const char** argv)
 	
 	{
 		auto error = std::string();
-		auto thread = std::jthread(run_fanotify, std::ref(error), std::ref(names), fd, mock_root);
+		auto thread = std::jthread(run_fanotify, std::ref(error), std::ref(names), fanotify.get(), std::cref(mock_root));
 		std::cin.get();
 		if (not error.empty())
 		{
