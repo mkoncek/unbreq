@@ -1,71 +1,52 @@
-= Unbreq -- Detector of unused `BuildRequires` of RPM builds.
+= Unbreq
+
+Detector of unused `BuildRequires` of RPM builds.
 
 == Building
 
-This project requires `librpm`.
+Build the project:
 
-To compile, simply run:
+----
+$ make all
+----
 
-....
-make all
-....
+Either install or install symlink of the Python plugin and the executable file watcher:
+
+----
+# make install
+----
+
+----
+# make install-link
+----
+
+To uninstall:
+
+----
+# make uninstall
+----
 
 == Usage
 
 NOTE: This project is in a very early stage.
 
-In order to use it from mock builds:
+This project is currently implemented as a mock plugin.
+The native part uses `fanotify` to watch filesystem accesses.
 
-. build the project
-+
-....
-make -j8
-....
+To run it, install it and then enable it from the command line:
 
-. place the compiled library and the program somewhere into the buildroot (for example into `/usr/local/lib64`)
-+
-....
-cp -t /var/lib/mock/fedora-rawhide-x86_64/root/usr/local/lib64 target/*
-....
+----
+mock --enable-plugin=unbreq
+----
 
-. edit the `.spec` file
+In logs you should see messages like:
 
-.. use `LD_PRELOAD` immediately after the `%setup` of `%prep`, the `%build` and the `%check` (if present) build step
-+
-....
-%prep
-%setup -q ...
-export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
-...
+----
+INFO: enabled unbreq plugin
+----
 
-%build
-export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
-...
+If Unbreq detects an unneeded `BuildRequire` it prints a message like:
 
-%check
-export LD_PRELOAD="/usr/local/lib64/libunbreq.so:${LD_PRELOAD}"
-...
-....
-
-.. at the end of the `%check` step, manually execute the compiled program
-+
-....
-%check
-...
-/usr/local/lib64/resolve
-....
-
-. after building, you can see the output, for example:
-+
-....
-...
-[INFO] Installation successful
-...
-+ /usr/local/lib64/resolve
-warning: BuildRequires asciidoc is not needed
-...
-....
-
-== TODO
-
-Transitive `Requires` of `BuildRequires`.
+----
+Unbreq plugin: the following BuildRequires were not used: ${packages}
+----

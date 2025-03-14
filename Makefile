@@ -1,4 +1,6 @@
-all: target/libunbreq.so target/resolve
+.PHONY: all clean install install-link uninstall
+
+all: target/fanotify
 
 CC ?= cc
 CXX ?= c++
@@ -27,6 +29,16 @@ target/fuse: src/fuse.cpp Makefile | target/
 target/fanotify: src/fanotify.cpp Makefile | target/
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
+install-link: target/fanotify
+	ln -s -t /usr/lib/python*/site-packages/mockbuild/plugins/ $$(readlink -f src/unbreq.py)
+	ln -s $$(readlink -f target/fanotify) /usr/libexec/unbreq
+
+install: target/fanotify
+	install -m 755 -t /usr/lib/python*/site-packages/mockbuild/plugins src/unbreq.py
+	install -m 755 target/fanotify /usr/libexec/unbreq
+
+uninstall:
+	rm -fv /usr/lib/python*/site-packages/mockbuild/plugins/unbreq.py /usr/libexec/unbreq
 # sudo setcap 'cap_sys_admin=+ep cap_dac_read_search=+ep' ./target/fanotify
 
 # /usr/lib/python3.13/site-packages/mockbuild/plugins/package_state.py
