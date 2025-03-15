@@ -50,3 +50,23 @@ If Unbreq detects an unneeded `BuildRequire` it prints a message like:
 ----
 Unbreq plugin: the following BuildRequires were not used: ${packages}
 ----
+
+== TODO
+- [ ] `FAN_MARK_MOUNT`
++
+`fanotify_mark` should be able to work with this parameter instead of `FAN_MARK_FILESYSTEM`.
+For this to work, the mock build needs to happen inside a bind-mounted directory.
+If implemented, we avoid monitoring *all* the filesystem activity and can completely avoid any filtering.
+
+- [ ] Robust mock root binding
++
+We need to query `dnf` because of potentially complex `BuildRequires` expressions.
+Ideally exactly the binary from the bootstrap root using chroot.
+However, the `dnf` needs to use the build chroot as the `--installroot` so it needs to have access outside of its chroot.
+Currently this is done via `mount --bind` which needs to be unmmounted when the plugin is finished.
+This is fragile and can leave mounted volume if the process is interrupted.
+
+- [ ] `libdnf`
++
+We are currently invoking `dnf` to query needed information.
+It may be possible to use `libdnf` directly.

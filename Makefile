@@ -9,7 +9,6 @@ CFLAGS += -std=c99
 CXXFLAGS ?= -Wall -Wextra -Wpedantic -Wconversion -Og -g -fsanitize=address,undefined
 CXXFLAGS += -std=c++2a
 LDFLAGS ?= -fsanitize=address,undefined
-LDLIBS += -lrpm -lrpmio -lrpmbuild
 
 clean:
 	@rm -rf -v target
