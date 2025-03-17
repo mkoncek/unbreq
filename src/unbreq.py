@@ -43,7 +43,7 @@ class Mounted_root:
         self.mountpoint = mountpoint
         self.target = target
     def __enter__(self):
-        subprocess.run(["umount", self.mountpoint])
+        p = subprocess.run(["umount", self.mountpoint], capture_output = True)
         subprocess.run(["rm", "-rf", self.mountpoint])
         os.mkdir(self.mountpoint)
         subprocess.run(["mount", "--bind", self.target, self.mountpoint])
@@ -64,6 +64,7 @@ class Unbreq(object):
         plugins.add_hook("prebuild", self._PreBuildHook)
         plugins.add_hook("postbuild", self._PostBuildHook)
 
+    @traceLog()
     def resolve_buildrequires(self):
         chroot_command = ["chroot", self.buildroot.bootstrap_buildroot.rootdir]
         chroot_dnf_command = chroot_command + ["/usr/bin/dnf", "--installroot=/mnt/root"]
