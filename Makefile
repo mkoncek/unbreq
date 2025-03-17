@@ -10,6 +10,8 @@ CXXFLAGS ?= -Wall -Wextra -Wpedantic -Wconversion -Og -g -fsanitize=address,unde
 CXXFLAGS += -std=c++2a
 LDFLAGS ?= -fsanitize=address,undefined
 
+buildroot ?= /usr/libexec
+python3_sitelib ?= /usr/lib/python*/site-packages
 libexecdir ?= /usr/libexec
 
 clean:
@@ -31,15 +33,15 @@ target/fanotify: src/fanotify.cpp Makefile | target/
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 install-link: target/fanotify
-	ln -s -t /usr/lib/python*/site-packages/mockbuild/plugins/ $$(readlink -f src/unbreq.py)
+	ln -s -t $(python3_sitelib)/mockbuild/plugins/ $$(readlink -f src/unbreq.py)
 	ln -s $$(readlink -f target/fanotify) $(libexecdir)/unbreq
 
 install: target/fanotify
-	install -m 755 -t /usr/lib/python*/site-packages/mockbuild/plugins src/unbreq.py
-	install -m 755 target/fanotify $(libexecdir)/unbreq
+	install -m 755 -D -t $(buildroot)$(python3_sitelib)/mockbuild/plugins src/unbreq.py
+	install -m 755 -D target/fanotify $(buildroot)$(libexecdir)/unbreq
 
 uninstall:
-	rm -fv /usr/lib/python*/site-packages/mockbuild/plugins/unbreq.py $(libexecdir)/unbreq
-# sudo setcap 'cap_sys_admin=+ep cap_dac_read_search=+ep' ./target/fanotify
+	rm -fv $(python3_sitelib)/mockbuild/plugins/unbreq.py $(libexecdir)/unbreq
 
-# /usr/lib/python3.13/site-packages/mockbuild/plugins/package_state.py
+print:
+	echo $(python3_sitelib)
