@@ -45,7 +45,7 @@ class Mounted_root:
     def __enter__(self):
         p = subprocess.run(["umount", self.mountpoint], capture_output = True)
         subprocess.run(["rm", "-rf", self.mountpoint])
-        os.mkdir(self.mountpoint)
+        subprocess.run(["mkdir", "-p", self.mountpoint])
         subprocess.run(["mount", "--bind", self.target, self.mountpoint])
     def __exit__(self, exc_type, exc_value, exc_traceback):
         subprocess.run(["umount", self.mountpoint])
@@ -61,17 +61,26 @@ class Unbreq(object):
         self.files_output = None
         self.unbreq_process = None
 
+        self.USE_NSPAWN = False
+
         plugins.add_hook("prebuild", self._PreBuildHook)
         plugins.add_hook("postbuild", self._PostBuildHook)
 
     @traceLog()
     def resolve_buildrequires(self):
-        chroot_command = ["chroot", self.buildroot.bootstrap_buildroot.rootdir]
-        chroot_dnf_command = chroot_command + ["/usr/bin/dnf", "--installroot=/mnt/root"]
+        if self.USE_NSPAWN:
+            chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--background", "", "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir]
+        else:
+            chroot_command = ["chroot", self.buildroot.bootstrap_buildroot.rootdir]
+        chroot_dnf_command = chroot_command + ["/usr/bin/dnf", "--installroot", self.buildroot.rootdir]
         srpm_dir = pathlib.Path(self.buildroot.rootdir + os.path.join(self.buildroot.builddir, "SRPMS"))
 
         def get_files(packages):
-            process = subprocess.run(chroot_command + ["/usr/bin/rpm", "--root", "/mnt/root", "-ql"] + packages, capture_output = True)
+            if len(packages) == 0:
+                return list()
+            process = subprocess.run(chroot_command + ["/usr/bin/rpm", "--root", self.buildroot.rootdir, "-ql"] + packages,
+                stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+            )
             if process.returncode != 0:
                 raise RuntimeError("process {} returned {}: {}".format(
                     process.args, process.returncode, process.stderr.decode("utf-8").rstrip()
@@ -83,20 +92,15 @@ class Unbreq(object):
         rev_br_providers = dict()
         for srpm in srpm_dir.iterdir():
             for br in get_buildrequires(str(srpm)):
-                br_providers[br] = None
-        for br in br_providers.keys():
-            br_providers[br] = subprocess.Popen(
-                chroot_dnf_command + ["repoquery", "--installed", "--whatprovides", br],
-                stdout = subprocess.PIPE, stderr = subprocess.PIPE,
-            )
-        for br, providers_process in br_providers.items():
-            with providers_process as providers_process:
-                stdout, stderr = providers_process.communicate()
-                if providers_process.wait() != 0:
+                process = subprocess.run(
+                    chroot_dnf_command + ["repoquery", "--installed", "--whatprovides", br],
+                    stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+                )
+                if process.returncode != 0:
                     raise RuntimeError("process {} returned {}: {}".format(
-                        providers_process.args, providers_process.returncode, stderr.decode("utf-8").strip()
+                        process.args, process.returncode, process.stderr.decode("utf-8").strip()
                     ))
-                br_providers_br = stdout.decode("ascii").splitlines()
+                br_providers_br = process.stdout.decode("ascii").splitlines()
                 br_providers[br] = br_providers_br
                 for provider in br_providers_br:
                     rev_br_providers.setdefault(provider, list()).append(br)
@@ -119,9 +123,11 @@ class Unbreq(object):
 
         brs_can_be_removed = list()
         for br, providers in br_providers.items():
-            process = subprocess.run(chroot_dnf_command + ["--assumeno", "remove"] + brs_can_be_removed + providers, capture_output = True)
+            process = subprocess.run(chroot_dnf_command + ["--assumeno", "remove"] + brs_can_be_removed + providers,
+                stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+            )
             if process.returncode != 1:
-                raise("process {} returned {}: {}".format(
+                raise RuntimeError("process {} returned {}: {}".format(
                     process.args, process.returncode, process.stderr.decode("utf-8").rstrip()
                 ))
             removed_packages = list()
@@ -181,6 +187,9 @@ class Unbreq(object):
             for line in accessed_files_stream:
                 self.accessed_files.add(line.strip())
 
-        mounted_root = os.path.join(self.buildroot.bootstrap_buildroot.rootdir, "mnt/root")
-        with Mounted_root(mounted_root, self.buildroot.rootdir):
+        if self.USE_NSPAWN:
             self.resolve_buildrequires()
+        else:
+            mounted_root = self.buildroot.bootstrap_buildroot.rootdir + self.buildroot.rootdir
+            with Mounted_root(mounted_root, self.buildroot.rootdir):
+                self.resolve_buildrequires()
