@@ -5,6 +5,7 @@ import codecs
 # our imports
 from mockbuild.trace_decorator import getLog, traceLog
 import mockbuild.util
+import mockbuild.mounts
 
 import rpm
 import pathlib
@@ -38,19 +39,6 @@ def get_buildrequires(rpm_file):
         fd.close()
     return result
 
-class Mounted_root:
-    def __init__(self, mountpoint, target):
-        self.mountpoint = mountpoint
-        self.target = target
-    def __enter__(self):
-        p = subprocess.run(["umount", self.mountpoint], capture_output = True)
-        subprocess.run(["rm", "-rf", self.mountpoint])
-        subprocess.run(["mkdir", "-p", self.mountpoint])
-        subprocess.run(["mount", "--bind", self.target, self.mountpoint])
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        subprocess.run(["umount", self.mountpoint])
-        subprocess.run(["rm", "-rf", self.mountpoint])
-
 class Unbreq(object):
     @traceLog()
     def __init__(self, plugins, conf, buildroot):
@@ -61,7 +49,7 @@ class Unbreq(object):
         self.files_output = None
         self.unbreq_process = None
 
-        self.USE_NSPAWN = False
+        self.USE_NSPAWN = mockbuild.util.USE_NSPAWN
 
         plugins.add_hook("prebuild", self._PreBuildHook)
         plugins.add_hook("postbuild", self._PostBuildHook)
@@ -69,9 +57,9 @@ class Unbreq(object):
     @traceLog()
     def resolve_buildrequires(self):
         if self.USE_NSPAWN:
-            chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--background", "", "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir]
+            chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--pipe", "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir]
         else:
-            chroot_command = ["chroot", self.buildroot.bootstrap_buildroot.rootdir]
+            chroot_command = ["/usr/bin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
         chroot_dnf_command = chroot_command + ["/usr/bin/dnf", "--installroot", self.buildroot.rootdir]
         srpm_dir = pathlib.Path(self.buildroot.rootdir + os.path.join(self.buildroot.builddir, "SRPMS"))
 
@@ -190,6 +178,6 @@ class Unbreq(object):
         if self.USE_NSPAWN:
             self.resolve_buildrequires()
         else:
-            mounted_root = self.buildroot.bootstrap_buildroot.rootdir + self.buildroot.rootdir
-            with Mounted_root(mounted_root, self.buildroot.rootdir):
+            with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
+                self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
                 self.resolve_buildrequires()

@@ -3,3 +3,13 @@
 -Wall
 -Wextra
 -Wno-varargs
+
+-I/usr/include/modulemd-2.0
+-I/usr/include/glib-2.0
+-I/usr/lib64/glib-2.0/include
+-I/usr/include/sysprof-6
+-pthread
+-D_FILE_OFFSET_BITS=64
+-I/usr/include/libxml2
+-DWITH_GZFILEOP
+-I/usr/include/libsmartcols
