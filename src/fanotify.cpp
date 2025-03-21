@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <span>
 #include <regex>
-#include <ranges>
 #include <vector>
 #include <charconv>
 #include <iostream>

@@ -1,5 +1,4 @@
 #include <iostream>
-#include <memory>
 #include <string_view>
 #include <ranges>
 
@@ -194,6 +193,11 @@ int main(int argc, const char** argv)
 		}
 	}
 	
+	// if a Buildrequire is provided by multiple providers, we try to prune them
+	// down by assuming that if the same provider provides multiple
+	// BuildRequires and one of the BuildRequires only has a single provider,
+	// then the provider was installed because of this requirement, and is not
+	// really needed by the BuildRequire with multiple providers.
 	{
 		auto sorted_br_providers = std::vector<std::pair<std::string_view, std::size_t>>();
 		sorted_br_providers.reserve(br_providers.size());
