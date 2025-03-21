@@ -4,28 +4,31 @@
 #include <sys/stat.h>
 #include <sys/epoll.h>
 
+#include <cstring>
+#include <cerrno>
+#include <cstdlib>
+#include <climits>
+
 #include <algorithm>
 #include <span>
 #include <regex>
 #include <vector>
 #include <charconv>
-#include <iostream>
 #include <array>
-#include <cstring>
-#include <cerrno>
-#include <cstdlib>
-#include <climits>
 #include <set>
 #include <string>
 #include <format>
+
 #include <experimental/scope>
 #include <experimental/array>
+
+static const char* program_name = "";
 
 static void checked_close(int fd)
 {
 	if (close(fd))
 	{
-		std::clog << "[WARN] failed to close file descriptor " << fd << ": " << std::strerror(errno) << "\n";
+		std::fprintf(stderr, "WARNING: %s: failed to close file descriptor %d: %s\n", program_name, fd, std::strerror(errno));
 	}
 }
 
@@ -158,7 +161,7 @@ struct Unbreq
 		bool keep_running = true;
 		auto names = std::set<std::string>();
 		
-		std::clog << "[INFO] fanotify running..." << "\n";
+		std::fprintf(stderr, "INFO: ready to monitor file accesses...\n");
 		
 		while (keep_running)
 		{
@@ -176,7 +179,7 @@ struct Unbreq
 				else
 				{
 					auto len = read(fd, std::data(data_), std::span(data_).size_bytes());
-					if (len == -1)
+					if (len == -1) [[unlikely]]
 					{
 						throw std::runtime_error(std::format("read of {} failed: {}", fd, std::strerror(errno)));
 					}
@@ -195,7 +198,9 @@ struct Unbreq
 					{
 						if (metadata->vers != FANOTIFY_METADATA_VERSION) [[unlikely]]
 						{
-							throw std::format("mismatch of fanotify metadata version, expected: {}, found: {}", FANOTIFY_METADATA_VERSION, metadata->vers);
+							throw std::runtime_error(std::format(
+								"mismatch of fanotify metadata version, expected: {}, found: {}", FANOTIFY_METADATA_VERSION, metadata->vers
+							));
 						}
 						
 						auto fid = std::bit_cast<fanotify_event_info_fid*>(metadata + 1);
@@ -212,9 +217,9 @@ struct Unbreq
 						{
 							file_name = std::bit_cast<const char*>(&*file_handle->f_handle + file_handle->handle_bytes);
 						}
-						else
+						else [[unlikely]]
 						{
-							throw std::format("received unexpected event info type");
+							throw std::logic_error(std::format("received unexpected event info type: {}", fid->hdr.info_type));
 						}
 						
 						auto event_fd = open_by_handle_at(mount_fd_.get(), file_handle, O_RDONLY);
@@ -225,9 +230,9 @@ struct Unbreq
 							{
 								continue;
 							}
-							else
+							else [[unlikely]]
 							{
-								throw std::format("open_by_handle_at failed: {}", std::strerror(errno));
+								throw std::runtime_error(std::format("open_by_handle_at failed: {}", std::strerror(errno)));
 							}
 						}
 						auto event_fd_owner = std::experimental::unique_resource(event_fd, &checked_close);
@@ -235,9 +240,11 @@ struct Unbreq
 						*std::to_chars(procfd_end, std::end(procfd_path), event_fd).ptr = '\0';
 						auto path_buf = std::array<char, PATH_MAX>();
 						auto path_len = readlink(std::data(procfd_path), std::data(path_buf), std::size(path_buf) - 1);
-						if (path_len == -1)
+						if (path_len == -1) [[unlikely]]
 						{
-							throw std::format("readlink of {} failed: {}", std::string_view(std::data(procfd_path), procfd_end), std::strerror(errno));
+							throw std::runtime_error(std::format(
+								"readlink of {} failed: {}", std::string_view(std::data(procfd_path), procfd_end), std::strerror(errno)
+							));
 						}
 						
 						auto path = std::string_view(std::data(path_buf), path_len);
@@ -277,8 +284,10 @@ struct Unbreq
 	}
 };
 
-int main(int argc, const char** argv)
+int main(int argc, const char** argv) try
 {
+	program_name = argv[0];
+	
 	auto args = Arguments::parse(argc, argv);
 	auto unbreq = Unbreq(args);
 	
@@ -286,4 +295,14 @@ int main(int argc, const char** argv)
 	
 	fsync(args.output_fd_);
 	lseek(args.output_fd_, 0, SEEK_SET);
+}
+catch (std::invalid_argument& ex)
+{
+	std::fprintf(stderr, "ERROR: %s: when parsing arguments: %s", argv[0], ex.what());
+	return 1;
+}
+catch (std::exception& ex)
+{
+	std::fprintf(stderr, "ERROR: %s: an exception occured: %s", argv[0], ex.what());
+	return 2;
 }

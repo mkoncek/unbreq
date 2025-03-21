@@ -137,8 +137,8 @@ class Unbreq(object):
                 brs_can_be_removed.append((br, providers))
         if len(brs_can_be_removed) != 0:
             brs = list(map(lambda t: t[0], brs_can_be_removed))
-            getLog().warning("Unbreq plugin: the following BuildRequires were not used: {}", ", ".join(brs))
-            print("Unbreq plugin: the following BuildRequires were not used: {}".format(", ".join(brs)))
+            getLog().warning("unbreq plugin: the following BuildRequires were not used: {}", ", ".join(brs))
+            print("unbreq plugin: the following BuildRequires were not used: {}".format(", ".join(brs)))
 
     @traceLog()
     def _PreBuildHook(self):
@@ -151,8 +151,8 @@ class Unbreq(object):
             pass_fds = [self.files_output],
         )
         line = self.unbreq_process.stderr.readline()
-        if line != b"[INFO] fanotify running...\n":
-            getLog().error("Unbreq plugin: unexpected message: {}", line.decode("utf-8").rstrip())
+        if line != b"INFO: ready to monitor file accesses...\n":
+            getLog().error("unbreq plugin: unexpected message: {}", line.decode("utf-8").rstrip())
 
     # TODO enable only for successful builds
     @traceLog()
@@ -163,13 +163,13 @@ class Unbreq(object):
         with self.unbreq_process as unbreq_process:
             stdout, stderr = unbreq_process.communicate("")
             if unbreq_process.wait() != 0:
-                getLog().error("Unbreq plugin: process {} returned {}: {}",
+                getLog().error("unbreq plugin: process {} returned {}: {}",
                     unbreq_process.args, unbreq_process.returncode, stderr.decode("utf-8").rstrip()
                 )
             else:
                 stderr = stderr.decode("utf-8").rstrip()
                 if len(stderr) != 0:
-                    getLog().warning("Unbreq plugin: process {}: {}",
+                    getLog().warning("unbreq plugin: process {}: {}",
                         unbreq_process.args, stderr
                     )
 
@@ -186,11 +186,11 @@ class Unbreq(object):
         if process.returncode == 0:
             brs = process.stdout.decode("utf-8").splitlines()
             if len(brs) > 0:
-                getLog().warning("Unbreq plugin: the following BuildRequires were not used:")
+                getLog().warning("unbreq plugin: the following BuildRequires were not used:")
                 for br in brs:
                     print("\t" + br)
         else:
-            getLog().error("Unbreq resolution failed with {}:", process.returncode)
+            getLog().error("unbreq resolution failed with {}:", process.returncode)
             print(process.stderr.decode("utf-8").rstrip())
 
         # self.accessed_files = set()

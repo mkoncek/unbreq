@@ -1,11 +1,13 @@
+#include "rpmquery.hpp"
+
+#include <sys/mman.h>
+#include <sys/stat.h>
+
 #include <iostream>
 #include <string_view>
 #include <ranges>
 
 #include <experimental/scope>
-
-#include <sys/mman.h>
-#include <sys/stat.h>
 
 #include <libdnf5/base/base.hpp>
 #include <libdnf5/base/goal.hpp>
@@ -14,8 +16,6 @@
 #include <libdnf5/utils/patterns.hpp>
 #include <libdnf5-cli/output/adapters/transaction.hpp>
 #include <libdnf5-cli/output/transaction_table.hpp>
-
-#include "rpmquery.hpp"
 
 auto query_whatprovides(libdnf5::Base& base, const std::vector<std::string>& values)
 -> libdnf5::rpm::PackageQuery
