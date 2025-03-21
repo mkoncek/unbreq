@@ -91,12 +91,25 @@ static auto create_ds(Header header, rpmTagVal tagN, int flags) -> std::experime
 	return result;
 }
 
-auto rpmquery::query_buildrequires(const char* srpm_path) -> std::vector<std::string>
+void rpmquery::init_cli()
+{
+	// default `file` parameter is: /usr/lib/rpm/rpmrc:/usr/lib/rpm/redhat/rpmrc:/etc/rpmrc:~/.config/rpm/rpmrc
+	if (auto rc = rpmReadConfigFiles(nullptr, nullptr); rc != 0)
+	{
+		throw std::runtime_error("rpmReadConfigFiles failed");
+	}
+}
+
+auto rpmquery::query_buildrequires(const char* srpm_path, std::optional<const char*> root) -> std::vector<std::string>
 try
 {
 	auto result = std::vector<std::string>();
 	
 	auto ts = create_ts();
+	if (root.has_value())
+	{
+		rpmtsSetRootDir(ts.get(), *root);
+	}
 	auto fd = create_fd(srpm_path, "r");
 	rpmtsSetVSFlags(ts.get(),
 		RPMVSF_NOHDRCHK | RPMVSF_NOSHA1HEADER | RPMVSF_NODSAHEADER | RPMVSF_NORSAHEADER | RPMVSF_NOMD5 | RPMVSF_NODSA | RPMVSF_NORSA
@@ -127,19 +140,17 @@ catch (std::exception& ex)
 	throw std::runtime_error(std::format("when querying BuildRequires of {}: {}", srpm_path, ex.what()));
 }
 
-void rpmquery::init_cli()
-{
-	if (auto rc = rpmReadConfigFiles(nullptr, nullptr); rc != 0)
-	{
-		throw std::runtime_error("rpmReadConfigFiles failed");
-	}
-}
-
-auto rpmquery::query_files(std::string_view rpm) -> std::vector<std::string>
+auto rpmquery::query_files(std::string_view rpm, std::optional<const char*> root) -> std::vector<std::string>
 try
 {
 	auto ts = create_ts();
-	auto it = std::experimental::make_unique_resource_checked(rpmtsInitIterator(ts.get(), RPMDBI_LABEL, rpm.data(), rpm.size()), nullptr, rpmdbFreeIterator);
+	if (root.has_value())
+	{
+		rpmtsSetRootDir(ts.get(), *root);
+	}
+	auto it = std::experimental::make_unique_resource_checked(
+		rpmtsInitIterator(ts.get(), RPMDBI_LABEL, rpm.data(), rpm.size()), nullptr, rpmdbFreeIterator
+	);
 	if (not it.get())
 	{
 		throw std::runtime_error("rpmtsInitIterator failed, package may not be installed");

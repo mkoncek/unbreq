@@ -5,6 +5,10 @@
 #include <sys/epoll.h>
 
 #include <algorithm>
+#include <span>
+#include <regex>
+#include <ranges>
+#include <vector>
 #include <charconv>
 #include <iostream>
 #include <array>
@@ -16,6 +20,7 @@
 #include <string>
 #include <format>
 #include <experimental/scope>
+#include <experimental/array>
 
 static void checked_close(int fd)
 {
@@ -25,20 +30,71 @@ static void checked_close(int fd)
 	}
 }
 
+struct Arguments
+{
+	std::string root_path_;
+	int output_fd_ = 1;
+	std::vector<std::regex> exclude_accessed_files_;
+	
+	static Arguments parse(int argc, const char** argv)
+	{
+		auto result = Arguments();
+		
+		if (argc < 2)
+		{
+			throw std::invalid_argument("missing argument #1: root path");
+		}
+		
+		result.root_path_ = argv[1];
+		
+		if (argc >= 3)
+		{
+			result.output_fd_ = std::atoi(argv[2]);
+			
+			if (result.output_fd_ == 0)
+			{
+				throw std::invalid_argument(std::format("invalid argument #2: expected a nonzero integer, got: {}", argv[2]));
+			}
+		}
+		
+		constexpr auto key_args = std::experimental::make_array<std::string_view>(
+			"-e"
+		);
+		auto last_arg = std::optional<std::string_view>();
+		for (int i = 3; i != argc; ++i)
+		{
+			auto arg = std::string_view(argv[i]);
+			if (std::ranges::find(key_args, arg) != std::end(key_args))
+			{
+				last_arg.emplace(arg);
+				continue;
+			}
+			if (last_arg == "-e")
+			{
+				last_arg.reset();
+				result.exclude_accessed_files_.emplace_back(arg.data(), arg.size(), std::regex_constants::extended);
+			}
+		}
+		
+		if (last_arg.has_value())
+		{
+			throw std::invalid_argument(std::format("missing value for argument #{}: {}", argc, *last_arg));
+		}
+		
+		return result;
+	}
+};
+
 struct Unbreq
 {
-	std::string mock_root_;
 	std::experimental::unique_resource<int, void(*)(int)> fanotify_fd_;
 	std::experimental::unique_resource<int, void(*)(int)> epoll_fd_;
 	std::experimental::unique_resource<int, void(*)(int)> mount_fd_;
 	alignas(fanotify_event_metadata) std::array<unsigned char, sizeof(fanotify_event_metadata) * 32> data_;
-	int out_fd_;
 	
-	Unbreq(std::string mock_root, int out_fd)
+	Unbreq(const Arguments& args)
 		:
-		mock_root_(std::move(mock_root)),
-		data_(),
-		out_fd_(out_fd)
+		data_()
 	{
 		auto fanotify_fd = std::experimental::make_unique_resource_checked(fanotify_init(
 			FAN_CLASS_NOTIF | FAN_CLOEXEC | FAN_REPORT_DFID_NAME | FAN_NONBLOCK,
@@ -53,7 +109,7 @@ struct Unbreq
 			FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
 			FAN_ACCESS | FAN_MODIFY | FAN_CLOSE_WRITE | FAN_CLOSE_NOWRITE | FAN_OPEN | FAN_OPEN_EXEC,
 			AT_FDCWD,
-			mock_root_.c_str()) == -1)
+			args.root_path_.c_str()) == -1)
 		{
 			throw std::runtime_error(std::format("fanotify_mark failed: {}", std::strerror(errno)));
 		}
@@ -86,10 +142,10 @@ struct Unbreq
 			throw std::runtime_error(std::format("failed to set non-blocking mode for the standard input stream: {}", std::strerror(errno)));
 		}
 		
-		auto mount_fd = std::experimental::make_unique_resource_checked(open(mock_root_.c_str(), O_DIRECTORY | O_RDONLY), -1, &checked_close);
+		auto mount_fd = std::experimental::make_unique_resource_checked(open(args.root_path_.c_str(), O_DIRECTORY | O_RDONLY), -1, &checked_close);
 		if (mount_fd.get() == -1)
 		{
-			throw std::runtime_error(std::format("open of {} failed: {}", mock_root_, std::strerror(errno)));
+			throw std::runtime_error(std::format("open of {} failed: {}", args.root_path_, std::strerror(errno)));
 		}
 		
 		fanotify_fd_ = std::move(fanotify_fd);
@@ -97,10 +153,11 @@ struct Unbreq
 		mount_fd_ = std::move(mount_fd);
 	}
 	
-	void run(std::set<std::string>& names)
+	void run(const Arguments& args)
 	{
 		auto events = std::array<epoll_event, 8>();
 		bool keep_running = true;
+		auto names = std::set<std::string>();
 		
 		std::clog << "[INFO] fanotify running..." << "\n";
 		
@@ -186,45 +243,48 @@ struct Unbreq
 						
 						auto path = std::string_view(std::data(path_buf), path_len);
 						
-						if (path.starts_with(mock_root_))
+						if (path.starts_with(args.root_path_))
 						{
 							auto name = std::string();
-							name.reserve(path.size() - mock_root_.size() + 1 + file_name.size() + 1 + 1);
-							name.append(path.substr(mock_root_.size())).append("/").append(file_name).append("\n");
-							auto [it, inserted] = names.insert(name);
-							if (inserted)
-							{
-								if (write(out_fd_, it->c_str(), it->size()) == -1)
-								{
-									std::clog << std::format("[ERROR] when writing to file descrptor {}: {}", out_fd_, std::strerror(errno)) << "\n";
-								}
-							}
+							name.reserve(path.size() - args.root_path_.size() + 1 + file_name.size() + 1 + 1);
+							name.append(path.substr(args.root_path_.size())).append("/").append(file_name).append("\n");
+							names.insert(name);
 						}
 					}
 				}
 			}
 		}
+		
+		for (const auto& name : names)
+		{
+			bool skip = false;
+			for (const auto& regex : args.exclude_accessed_files_)
+			{
+				if (std::regex_search(name, regex))
+				{
+					skip = true;
+				}
+			}
+			if (skip)
+			{
+				continue;
+			}
+			
+			if (write(args.output_fd_, name.c_str(), name.size()) == -1)
+			{
+				throw std::runtime_error(std::format("when writing to file descrptor {}: {}", args.output_fd_, std::strerror(errno)));
+			}
+		}
 	}
 };
 
-int main([[maybe_unused]] int argc, [[maybe_unused]] const char** argv)
+int main(int argc, const char** argv)
 {
-	if (argc < 2)
-	{
-		std::clog << "[ERROR] mock root path argument required" << "\n";
-		return 1;
-	}
+	auto args = Arguments::parse(argc, argv);
+	auto unbreq = Unbreq(args);
 	
-	int out_fd = 1;
+	unbreq.run(args);
 	
-	if (argc == 3)
-	{
-		out_fd = std::atoi(argv[2]);
-	}
-	
-	auto unbreq = Unbreq(argv[1], out_fd);
-	auto names = std::set<std::string>();
-	
-	unbreq.run(names);
-	fsync(out_fd);
+	fsync(args.output_fd_);
+	lseek(args.output_fd_, 0, SEEK_SET);
 }

@@ -1,19 +1,21 @@
-.PHONY: all clean install install-link uninstall
+MAKEFLAGS += -r
+.PHONY: compile clean install install-link uninstall
 
-all: target/fanotify
+define removesrcprefix
+$(patsubst src/%,%,$(1))
+endef
+
+compile: target/bin/fanotify target/bin/resolve
 
 # libdnf5 deadlocks with sanitizers
 # sanitize := -fsanitize=address,undefined
 
-CC ?= cc
 CXX ?= c++
-CFLAGS ?= -Wall -Wextra -Wconversion -Wno-varargs -Og -g
-CFLAGS += -std=c99
 CXXFLAGS ?= -Wall -Wextra -Wpedantic -Wconversion -Og -g $(sanitize)
 CXXFLAGS += -std=c++2a
-LDFLAGS ?= -fsanitize=address,undefined
+# LDFLAGS ?= -fsanitize=address,undefined
 
-buildroot ?= /usr/libexec
+buildroot ?= target/buildroot
 python3_sitelib ?= /usr/lib/python*/site-packages
 libexecdir ?= /usr/libexec
 
@@ -23,39 +25,36 @@ clean:
 %/:
 	@mkdir -p $@
 
-target/libunbreq.so: src/preload.c Makefile src/shared.hpp | target/
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< -shared -fpic -o $@
+target/object_files/%.o: Makefile | target/dependencies/ target/object_files/
+	$(CXX) -o $@ $(word 2,$^) -c $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -MF target/dependencies/$(basename $(call removesrcprefix,$(word 2,$^))).mk -MT $@
 
-target/resolve: src/resolve.cpp Makefile src/shared.hpp | target/
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+target/bin/%: Makefile | target/bin/
+	$(CXX) -o $@ $(wordlist 2,$(words $^),$^) $(LDFLAGS) $(LDLIBS)
 
-target/fuse: src/fuse.cpp Makefile | target/
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I/usr/include/fuse3 $(LDFLAGS) $(LDLIBS) -lfuse3 -o $@ $<
+# target/object_files/rpmquery.o: CXXFLAGS += -fsanitize=address,undefined
+target/object_files/rpmquery.o: CXXFLAGS += $(shell pkg-config --cflags rpm)
+target/object_files/rpmquery.o: src/rpmquery.cpp
 
-target/fanotify: src/fanotify.cpp Makefile | target/
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+target/object_files/resolve.o: CXXFLAGS += $(shell pkg-config --cflags libdnf5 libdnf5-cli)
+target/object_files/resolve.o: src/resolve.cpp
 
-target/rpmquery.o: CXXFLAGS += -fsanitize=address,undefined
-target/rpmquery.o: src/rpmquery.cpp Makefile | target/
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+target/object_files/fanotify.o: src/fanotify.cpp
 
-target/resolve_dnf: CPPFLAGS += $(shell pkg-config libdnf5 --cflags)
-target/resolve_dnf: CPPFLAGS += $(shell pkg-config libdnf5-cli --cflags)
-target/resolve_dnf: LDFLAGS += $(shell pkg-config libdnf5 --libs)
-target/resolve_dnf: LDFLAGS += $(shell pkg-config libdnf5-cli --libs)
-target/resolve_dnf: src/resolve_dnf.cpp target/rpmquery.o Makefile | target/
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< target/rpmquery.o $(LDFLAGS) $(LDLIBS) -o $@
+target/bin/fanotify: target/object_files/fanotify.o
+target/bin/resolve: LDFLAGS += $(shell pkg-config --libs libdnf5 libdnf5-cli rpm)
+target/bin/resolve: target/object_files/resolve.o target/object_files/rpmquery.o
 
-install-link: target/fanotify
+install-link: target/bin/fanotify
 	ln -s -t $(python3_sitelib)/mockbuild/plugins/ $$(readlink -f src/unbreq.py)
-	ln -s $$(readlink -f target/fanotify) $(libexecdir)/unbreq
+	mkdir -p $(libexecdir)/unbreq
+	ln -s -t $(libexecdir)/unbreq $$(readlink -f target/bin/fanotify target/bin/resolve)
+	ls -l $(python3_sitelib)/mockbuild/plugins/unbreq.py $(libexecdir)/unbreq/*
 
-install: target/fanotify
+install: target/bin/fanotify
 	install -m 755 -D -t $(buildroot)$(python3_sitelib)/mockbuild/plugins src/unbreq.py
-	install -m 755 -D target/fanotify $(buildroot)$(libexecdir)/unbreq
+	install -m 755 -D -t $(buildroot)$(libexecdir)/unbreq target/bin/fanotify target/bin/resolve
 
 uninstall:
-	rm -fv $(python3_sitelib)/mockbuild/plugins/unbreq.py $(libexecdir)/unbreq
+	rm -rfv $(python3_sitelib)/mockbuild/plugins/unbreq.py $(libexecdir)/unbreq
 
-print:
-	echo $(python3_sitelib)
+-include target/dependencies/*.mk
