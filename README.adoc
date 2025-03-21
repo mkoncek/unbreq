@@ -3,7 +3,6 @@
 Detector of unused `BuildRequires` of RPM builds.
 
 == Building
-
 Build the project:
 
 ----
@@ -27,7 +26,6 @@ To uninstall:
 ----
 
 == Usage
-
 NOTE: This project is in a very early stage.
 
 This project is currently implemented as a mock plugin.
@@ -50,6 +48,14 @@ If Unbreq detects an unneeded `BuildRequire` it prints a message like:
 ----
 Unbreq plugin: the following BuildRequires were not used: ${packages}
 ----
+
+=== Configuration
+The mock plugin reads these mock configuration fields for `config_opts`:
+
+`['plugin_conf']['unbreq_exclude_accessed_files']` : `List[String]` ::
+A list of regular expressions which are used to ignore file accesses of certain files.
++
+Example: `xmvn` always reads all files inside `/usr/share/maven-metadata/`, the exclusion filter `/usr/share/maven-metadata/` excludes these files from the listing.
 
 == TODO
 - [ ] `FAN_MARK_MOUNT`
