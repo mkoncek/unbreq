@@ -176,51 +176,74 @@ int main(int argc, const char** argv)
 	// --installed
 	base.get_repo_sack()->load_repos(libdnf5::repo::Repo::Type::SYSTEM);
 	
-	auto br_providers = std::map<std::string, std::vector<std::string>, std::less<>>();
-	auto rev_br_providers = std::map<std::string, std::vector<std::string>>();
+	using Pair_s_vs = std::pair<std::string, std::vector<std::string>>;
+	auto br_providers = std::vector<Pair_s_vs>();
 	
 	for (const auto& srpm : srpms)
 	{
-		for (auto& br : rpmquery::query_buildrequires(srpm.c_str(), installroot))
+		for (auto&& br : rpmquery::query_buildrequires(srpm.c_str(), installroot))
 		{
-			auto br_list = std::vector<std::string> {br};
-			auto& ref_br_providers = br_providers[br];
-			for (const auto& provider : query_whatprovides(base, br_list))
-			{
-				ref_br_providers.emplace_back(provider.get_nevra());
-				rev_br_providers[provider.get_nevra()].emplace_back(br);
-			}
+			br_providers.emplace_back(std::pair(std::move(br), std::vector<std::string>()));
 		}
 	}
-	
-	// if a Buildrequire is provided by multiple providers, we try to prune them
-	// down by assuming that if the same provider provides multiple
-	// BuildRequires and one of the BuildRequires only has a single provider,
-	// then the provider was installed because of this requirement, and is not
-	// really needed by the BuildRequire with multiple providers.
 	{
-		auto sorted_br_providers = std::vector<std::pair<std::string_view, std::size_t>>();
-		sorted_br_providers.reserve(br_providers.size());
-		for (const auto& kv : br_providers)
-		{
-			sorted_br_providers.emplace_back(kv.first, kv.second.size());
-			std::ranges::push_heap(sorted_br_providers, {}, &std::pair<std::string_view, std::size_t>::second);
-		}
-		std::ranges::sort_heap(sorted_br_providers, {}, &std::pair<std::string_view, std::size_t>::second);
+		std::ranges::sort(br_providers, {}, &Pair_s_vs::first);
+		auto [begin, end] = std::ranges::unique(br_providers, {}, &Pair_s_vs::first);
+		br_providers.erase(begin, end);
+	}
+	
+	{
+		using Pair_sv_sv = std::pair<std::string_view, std::string_view>;
+		auto rev_br_providers = std::vector<Pair_sv_sv>();
+		rev_br_providers.reserve(br_providers.size() + br_providers.size() / 2 + 8);
 		
-		for (std::string_view br : std::views::keys(sorted_br_providers))
+		for (auto&& [br, providers] : br_providers)
 		{
-			auto& providers = br_providers.find(br)->second;
+			auto br_list = std::vector<std::string> {br};
+			for (const auto& provider_package : query_whatprovides(base, br_list))
+			{
+				auto& provider = providers.emplace_back(provider_package.get_nevra());
+				
+				// Reserve a large enough memory block to disable short string
+				// optimization and avoid dangling pointers.
+				provider.reserve(sizeof(std::string));
+				
+				rev_br_providers.emplace_back(provider, br);
+			}
+		}
+		
+		// if a BuildRequire is provided by multiple providers, we try to prune
+		// them down by assuming that if the same provider provides multiple
+		// BuildRequires and one of the BuildRequires only has a single
+		// provider, then the provider was installed because of this
+		// requirement, and is not really needed by the BuildRequire with
+		// multiple providers.
+		auto sorted_br_providers = std::vector<std::size_t>();
+		sorted_br_providers.reserve(br_providers.size());
+		for (std::size_t i = 0; i != br_providers.size(); ++i)
+		{
+			sorted_br_providers.emplace_back(i);
+		}
+		std::ranges::sort(sorted_br_providers, {}, [&](std::size_t value) -> std::size_t
+		{
+			return br_providers[value].second.size();
+		});
+		
+		for (auto index : sorted_br_providers)
+		{
+			const auto& [br, providers] = br_providers[index];
 			if (providers.size() == 1)
 			{
-				for (const auto& rev_br : rev_br_providers.find(providers.front())->second)
+				std::erase_if(rev_br_providers, [&](const Pair_sv_sv& pair) -> bool
 				{
-					if (rev_br != br)
+					if (pair.first == providers[0] and pair.second != br)
 					{
-						auto& br_provides_rev = br_providers.find(rev_br)->second;
-						std::erase(br_provides_rev, rev_br);
+						auto& other_providers = std::ranges::lower_bound(br_providers, pair.second, {}, &Pair_s_vs::first)->second;
+						std::erase(other_providers, providers[0]);
+						return true;
 					}
-				}
+					return false;
+				});
 			}
 		}
 	}
