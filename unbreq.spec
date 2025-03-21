@@ -1,8 +1,8 @@
-%global git_ref 45ddcb7265075552902d53f439fcca7dfacef960
+%global git_ref ab221f7a1268f821aa18b667b4c6a6080c210937
 %global git_short_ref %(echo %{git_ref} | cut -b -7)
 
 Name:           unbreq
-Version:        0^20251703.%{git_short_ref}
+Version:        0^20252103.%{git_short_ref}
 Release:        %autorelease
 Summary:        Mock plugin - detector uf unneeded BuildRequires
 License:        Apache-2.0
@@ -15,6 +15,10 @@ BuildRequires:  make
 
 BuildRequires:  python3
 BuildRequires:  python3-rpm-macros
+
+BuildRequires:  pkgconfig(rpm)
+BuildRequires:  pkgconfig(libdnf5)
+BuildRequires:  pkgconfig(libdnf5-cli)
 
 %description
 %{summary}.
