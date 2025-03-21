@@ -26,8 +26,6 @@ To uninstall:
 ----
 
 == Usage
-NOTE: This project is in a very early stage.
-
 This project is currently implemented as a mock plugin.
 The native part uses `fanotify` to watch filesystem accesses.
 
