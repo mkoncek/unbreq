@@ -284,6 +284,7 @@ struct Unbreq
 	}
 };
 
+// <root path> <out fd> [-e regex...]
 int main(int argc, const char** argv) try
 {
 	program_name = argv[0];

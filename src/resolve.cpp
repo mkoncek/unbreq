@@ -3,7 +3,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
-#include <iostream>
+#include <cstdio>
+
 #include <string_view>
 #include <ranges>
 
@@ -11,11 +12,8 @@
 
 #include <libdnf5/base/base.hpp>
 #include <libdnf5/base/goal.hpp>
-#include <libdnf5/logger/null_logger.hpp>
 #include <libdnf5/rpm/package_query.hpp>
 #include <libdnf5/utils/patterns.hpp>
-#include <libdnf5-cli/output/adapters/transaction.hpp>
-#include <libdnf5-cli/output/transaction_table.hpp>
 
 auto query_whatprovides(libdnf5::Base& base, const std::vector<std::string>& values)
 -> libdnf5::rpm::PackageQuery
@@ -69,7 +67,7 @@ struct Accessed_files : protected std::vector<std::string_view>
 	{
 		if (munmap(const_cast<char*>(value.data()), value.size()))
 		{
-			std::clog << std::format("munmap failed: {}", std::strerror(errno)) << "\n";
+			std::fprintf(stderr, "munmap failed: %s\n", std::strerror(errno));
 		}
 	}
 	
@@ -118,11 +116,12 @@ struct Accessed_files : protected std::vector<std::string_view>
 	}
 };
 
+// <accessed files fd> <SRPMS directory path> [installroot path]
 int main(int argc, const char** argv)
 {
 	if (argc < 2)
 	{
-		throw std::runtime_error(std::format("missing argument: accessed files file descriptor"));
+		throw std::runtime_error(std::format("missing argument #1: accessed files file descriptor"));
 	}
 	
 	int accessed_files_fd = std::atoi(argv[1]);
@@ -134,7 +133,7 @@ int main(int argc, const char** argv)
 	
 	if (argc < 3)
 	{
-		throw std::runtime_error(std::format("missing argument: SRPM directory path"));
+		throw std::runtime_error(std::format("missing argument #2: SRPM directory path"));
 	}
 	auto srpms = std::vector<std::string>();
 	
@@ -144,7 +143,9 @@ int main(int argc, const char** argv)
 		{
 			if (not file.path().native().ends_with(".src.rpm"))
 			{
-				std::clog << std::format("suspicious file found in the SRPM directory: {}", file.path().native()) << "\n";
+				std::fprintf(stderr, "suspicious file found in the SRPM directory: %.*s\n",
+					static_cast<int>(file.path().native().size()), file.path().native().data()
+				);
 			}
 			srpms.emplace_back(file.path().native());
 		}
@@ -248,6 +249,7 @@ int main(int argc, const char** argv)
 		}
 	}
 	
+	// --assumeno
 	base.get_config().get_assumeno_option().set(true);
 	
 	auto brs_can_be_removed = std::vector<std::string>();
@@ -289,6 +291,6 @@ int main(int argc, const char** argv)
 	
 	for (const auto& br : brs_can_be_removed)
 	{
-		std::cout << br << "\n";
+		std::fprintf(stdout, "%.*s\n", static_cast<int>(br.size()), br.data());
 	}
 }
