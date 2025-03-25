@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include <string_view>
+#include <charconv>
 #include <ranges>
 
 #include <experimental/scope>
@@ -124,10 +125,12 @@ int main(int argc, const char** argv)
 		throw std::runtime_error(std::format("missing argument #1: accessed files file descriptor"));
 	}
 	
-	int accessed_files_fd = std::atoi(argv[1]);
-	if (accessed_files_fd == 0)
+	int accessed_files_fd = 1;
+	if (auto ec = std::from_chars(argv[1], argv[1] + std::strlen(argv[1]), accessed_files_fd).ec; ec != std::errc())
 	{
-		throw std::runtime_error(std::format("invalid argument #1, expected a nonzero numeric file descriptor, received: {}", argv[1]));
+		throw std::runtime_error(std::format("invalid argument #1, expected a nonzero numeric file descriptor, got: {}: {}",
+			argv[1], std::make_error_code(ec).message()
+		));
 	}
 	auto accessed_files = Accessed_files(accessed_files_fd);
 	

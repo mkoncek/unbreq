@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <span>
 #include <regex>
+#include <filesystem>
 #include <vector>
 #include <charconv>
 #include <array>
@@ -48,14 +49,18 @@ struct Arguments
 		}
 		
 		result.root_path_ = argv[1];
+		if (not std::filesystem::exists(result.root_path_))
+		{
+			throw std::runtime_error(std::format("argument #1: root path {}: file does not exist", result.root_path_));
+		}
 		
 		if (argc >= 3)
 		{
-			result.output_fd_ = std::atoi(argv[2]);
-			
-			if (result.output_fd_ == 0)
+			if (auto ec = std::from_chars(argv[1], argv[1] + std::strlen(argv[1]), result.output_fd_).ec; ec != std::errc())
 			{
-				throw std::invalid_argument(std::format("invalid argument #2: expected a nonzero integer, got: {}", argv[2]));
+				throw std::invalid_argument(std::format("invalid argument #2: expected a nonzero numeric file descriptor, got: {}: {}",
+					argv[2], std::make_error_code(ec).message()
+				));
 			}
 		}
 		
@@ -299,11 +304,11 @@ int main(int argc, const char** argv) try
 }
 catch (std::invalid_argument& ex)
 {
-	std::fprintf(stderr, "ERROR: %s: when parsing arguments: %s", argv[0], ex.what());
+	std::fprintf(stderr, "ERROR: %s: when parsing arguments: %s\n", argv[0], ex.what());
 	return 1;
 }
 catch (std::exception& ex)
 {
-	std::fprintf(stderr, "ERROR: %s: an exception occured: %s", argv[0], ex.what());
+	std::fprintf(stderr, "ERROR: %s: an exception occured: %s\n", argv[0], ex.what());
 	return 2;
 }
