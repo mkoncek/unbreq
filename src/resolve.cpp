@@ -76,14 +76,13 @@ struct Accessed_files : protected std::vector<std::string_view>
 	
 	Accessed_files(int fd)
 	{
-		struct stat st {};
-		if (fstat(fd, &st))
+		auto size = lseek(fd, 0, SEEK_CUR);
+		if (size == -1)
 		{
-			throw std::runtime_error(std::format("fstat failed: {}", std::strerror(errno)));
+			throw std::runtime_error(std::format("lseek failed: {}", std::strerror(errno)));
 		}
 		
-		auto size = st.st_size;
-		auto memory = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+		auto memory = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
 		if (memory == MAP_FAILED)
 		{
 			throw std::runtime_error(std::format("mmap failed: {}", std::strerror(errno)));

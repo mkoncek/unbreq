@@ -56,7 +56,7 @@ struct Arguments
 		
 		if (argc >= 3)
 		{
-			if (auto ec = std::from_chars(argv[1], argv[1] + std::strlen(argv[1]), result.output_fd_).ec; ec != std::errc())
+			if (auto ec = std::from_chars(argv[2], argv[2] + std::strlen(argv[2]), result.output_fd_).ec; ec != std::errc())
 			{
 				throw std::invalid_argument(std::format("invalid argument #2: expected a nonzero numeric file descriptor, got: {}: {}",
 					argv[2], std::make_error_code(ec).message()
@@ -274,6 +274,7 @@ struct Unbreq
 				if (std::regex_search(name, regex))
 				{
 					skip = true;
+					break;
 				}
 			}
 			if (skip)
@@ -294,21 +295,20 @@ int main(int argc, const char** argv) try
 {
 	program_name = argv[0];
 	
-	auto args = Arguments::parse(argc, argv);
+	const auto args = Arguments::parse(argc, argv);
 	auto unbreq = Unbreq(args);
 	
 	unbreq.run(args);
 	
 	fsync(args.output_fd_);
-	lseek(args.output_fd_, 0, SEEK_SET);
 }
 catch (std::invalid_argument& ex)
 {
-	std::fprintf(stderr, "ERROR: %s: when parsing arguments: %s\n", argv[0], ex.what());
+	std::fprintf(stderr, "%s: when parsing arguments: %s\n", argv[0], ex.what());
 	return 1;
 }
 catch (std::exception& ex)
 {
-	std::fprintf(stderr, "ERROR: %s: an exception occured: %s\n", argv[0], ex.what());
+	std::fprintf(stderr, "%s: an exception occured: %s\n", argv[0], ex.what());
 	return 2;
 }
