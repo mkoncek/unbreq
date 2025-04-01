@@ -1,8 +1,8 @@
-%global git_ref ab221f7a1268f821aa18b667b4c6a6080c210937
+%global git_ref 8001d1a8fddd6f287070ed21af0b0df646436421
 %global git_short_ref %(echo %{git_ref} | cut -b -7)
 
 Name:           unbreq
-Version:        0^20252103.%{git_short_ref}
+Version:        0^20250104.%{git_short_ref}
 Release:        %autorelease
 Summary:        Mock plugin - detector uf unneeded BuildRequires
 License:        Apache-2.0
