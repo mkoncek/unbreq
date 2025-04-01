@@ -2,7 +2,7 @@
 %global git_short_ref %(echo %{git_ref} | cut -b -7)
 
 Name:           unbreq
-Version:        0^20250104.%{git_short_ref}
+Version:        0^20250401.%{git_short_ref}
 Release:        %autorelease
 Summary:        Mock plugin - detector uf unneeded BuildRequires
 License:        Apache-2.0
