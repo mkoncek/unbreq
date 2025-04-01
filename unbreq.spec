@@ -39,7 +39,8 @@ make install
 %files
 %license LICENSE
 %doc README.adoc
-%{_libexecdir}/unbreq
+%{_libexecdir}/unbreq/fanotify
+%{_libexecdir}/unbreq/resolve
 %pycached %{python3_sitelib}/mockbuild/plugins/unbreq.py
 
 %changelog

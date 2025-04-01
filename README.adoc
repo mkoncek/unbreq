@@ -53,7 +53,7 @@ The mock plugin reads these mock configuration fields for `config_opts`:
 `['plugin_conf']['unbreq_exclude_accessed_files']` : `List[String]` ::
 A list of regular expressions which are used to ignore file accesses of certain files.
 +
-Example: `xmvn` always reads all files inside `/usr/share/maven-metadata/`, the exclusion filter `/usr/share/maven-metadata/` excludes these files from the listing.
+Example: `xmvn` always reads all files inside `/usr/share/maven-metadata/`, the exclusion filter `^/usr/share/maven-metadata/` excludes these files from the listing.
 
 == TODO
 - [ ] `FAN_MARK_MOUNT`
@@ -70,7 +70,7 @@ However, the `dnf` needs to use the build chroot as the `--installroot` so it ne
 Currently this is done via `mount --bind` which needs to be unmmounted when the plugin is finished.
 This is fragile and can leave mounted volume if the process is interrupted.
 
-- [ ] `libdnf`
+- [*] `libdnf`
 +
 We are currently invoking `dnf` to query needed information.
 It may be possible to use `libdnf` directly.
