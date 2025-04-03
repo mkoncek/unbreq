@@ -1,8 +1,8 @@
-%global git_ref 8001d1a8fddd6f287070ed21af0b0df646436421
+%global git_ref 9f5295c098912863a205f7e9a318b1980a2a15b9
 %global git_short_ref %(echo %{git_ref} | cut -b -7)
 
 Name:           unbreq
-Version:        0^20250401.%{git_short_ref}
+Version:        0^20250403.%{git_short_ref}
 Release:        %autorelease
 Summary:        Mock plugin - detector of unneeded BuildRequires
 License:        Apache-2.0
