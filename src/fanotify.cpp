@@ -23,13 +23,15 @@
 #include <experimental/scope>
 #include <experimental/array>
 
-static const char* program_name = "";
+static auto program_name = std::string_view();
 
 static void checked_close(int fd)
 {
 	if (close(fd))
 	{
-		std::fprintf(stderr, "WARNING: %s: failed to close file descriptor %d: %s\n", program_name, fd, std::strerror(errno));
+		std::fprintf(stderr, "WARNING: %.*s: failed to close file descriptor %d: %s\n",
+			int(program_name.size()), program_name.data(), fd, std::strerror(errno)
+		);
 	}
 }
 
@@ -165,6 +167,8 @@ struct Unbreq
 		auto events = std::array<epoll_event, 8>();
 		bool keep_running = true;
 		auto names = std::set<std::string>();
+		auto procfd_path = std::make_unique<char[]>(PATH_MAX);
+		auto path_buf = std::make_unique<char[]>(PATH_MAX);
 		
 		std::fprintf(stderr, "INFO: ready to monitor file accesses...\n");
 		
@@ -194,8 +198,7 @@ struct Unbreq
 						return;
 					}
 					
-					auto procfd_path = std::array<char, PATH_MAX>();
-					const auto procfd_end = std::ranges::copy(std::string_view("/proc/self/fd/"), std::data(procfd_path)).out;
+					const auto procfd_end = std::ranges::copy(std::string_view("/proc/self/fd/"), procfd_path.get()).out;
 					
 					for (fanotify_event_metadata* const metadata = std::bit_cast<fanotify_event_metadata*>(std::data(data_));
 						FAN_EVENT_OK(metadata, len);
@@ -203,8 +206,8 @@ struct Unbreq
 					{
 						if (metadata->vers != FANOTIFY_METADATA_VERSION) [[unlikely]]
 						{
-							throw std::runtime_error(std::format(
-								"mismatch of fanotify metadata version, expected: {}, found: {}", FANOTIFY_METADATA_VERSION, metadata->vers
+							throw std::runtime_error(std::format("mismatch of fanotify metadata version, expected: {}, found: {}",
+								FANOTIFY_METADATA_VERSION, metadata->vers
 							));
 						}
 						
@@ -242,24 +245,23 @@ struct Unbreq
 						}
 						auto event_fd_owner = std::experimental::unique_resource(event_fd, &checked_close);
 						
-						*std::to_chars(procfd_end, std::end(procfd_path), event_fd).ptr = '\0';
-						auto path_buf = std::array<char, PATH_MAX>();
-						auto path_len = readlink(std::data(procfd_path), std::data(path_buf), std::size(path_buf) - 1);
+						*std::to_chars(procfd_end, procfd_path.get() + PATH_MAX, event_fd).ptr = '\0';
+						auto path_len = readlink(procfd_path.get(), path_buf.get(), PATH_MAX - 1);
 						if (path_len == -1) [[unlikely]]
 						{
 							throw std::runtime_error(std::format(
-								"readlink of {} failed: {}", std::string_view(std::data(procfd_path), procfd_end), std::strerror(errno)
+								"readlink of {} failed: {}", std::string_view(procfd_path.get(), procfd_end), std::strerror(errno)
 							));
 						}
 						
-						auto path = std::string_view(std::data(path_buf), path_len);
+						auto path = std::string_view(path_buf.get(), path_len);
 						
 						if (path.starts_with(args.root_path_))
 						{
 							auto name = std::string();
 							name.reserve(path.size() - args.root_path_.size() + 1 + file_name.size() + 1 + 1);
 							name.append(path.substr(args.root_path_.size())).append("/").append(file_name).append("\n");
-							names.insert(name);
+							names.insert(std::move(name));
 						}
 					}
 				}

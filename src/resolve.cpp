@@ -293,6 +293,6 @@ int main(int argc, const char** argv)
 	
 	for (const auto& br : brs_can_be_removed)
 	{
-		std::fprintf(stdout, "%.*s\n", static_cast<int>(br.size()), br.data());
+		std::fprintf(stdout, "%.*s\n", int(br.size()), br.data());
 	}
 }

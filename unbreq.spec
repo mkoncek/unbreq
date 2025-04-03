@@ -4,7 +4,7 @@
 Name:           unbreq
 Version:        0^20250401.%{git_short_ref}
 Release:        %autorelease
-Summary:        Mock plugin - detector uf unneeded BuildRequires
+Summary:        Mock plugin - detector of unneeded BuildRequires
 License:        Apache-2.0
 URL:            https://github.com/mkoncek/unbreq
 
@@ -39,8 +39,7 @@ make install
 %files
 %license LICENSE
 %doc README.adoc
-%{_libexecdir}/unbreq/fanotify
-%{_libexecdir}/unbreq/resolve
+%{_libexecdir}/unbreq
 %pycached %{python3_sitelib}/mockbuild/plugins/unbreq.py
 
 %changelog
