@@ -19,6 +19,7 @@
 #include <set>
 #include <string>
 #include <format>
+#include <memory_resource>
 
 #include <experimental/scope>
 #include <experimental/array>
@@ -166,9 +167,11 @@ struct Unbreq
 	{
 		auto events = std::array<epoll_event, 8>();
 		bool keep_running = true;
-		auto names = std::set<std::string>();
 		auto procfd_path = std::make_unique<char[]>(PATH_MAX);
 		auto path_buf = std::make_unique<char[]>(PATH_MAX);
+		
+		auto memory_resource = std::pmr::monotonic_buffer_resource();
+		auto names = std::pmr::set<std::string>(std::pmr::polymorphic_allocator<>(&memory_resource));
 		
 		std::fprintf(stderr, "INFO: ready to monitor file accesses...\n");
 		
