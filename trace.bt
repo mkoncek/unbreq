@@ -1,0 +1,142 @@
+#!/usr/bin/env bpftrace
+
+// Generated-by: Claude Code
+
+// Usage: sudo bpftrace trace.bt -- <PID>
+// Monitors open/read/exec file activity for PID and its descendants
+
+BEGIN
+{
+    @target = $1;           // save root PID into a global
+    @tracked[@target] = 1;  // mark root PID as tracked
+    printf("=== Monitoring PID %d and its descendants (open/read/exec) ===\n", @target);
+    printf("Started at %s\n", strftime("%Y-%m-%d %H:%M:%S", nsecs));
+    
+    // Initialize tracking for standard FDs that might already exist
+    @fd_to_path[@target, 0] = "<stdin>";
+    @fd_to_path[@target, 1] = "<stdout>";  
+    @fd_to_path[@target, 2] = "<stderr>";
+}
+
+// When a tracked process forks/clones, track the child too
+tracepoint:sched:sched_process_fork
+/ @tracked[args->parent_pid] /
+{
+    @tracked[args->child_pid] = 1;
+    printf("[%s] FORK: PID %d -> %d (%s)\n", 
+           strftime("%H:%M:%S", nsecs), 
+           args->parent_pid, args->child_pid, comm);
+           
+    // Copy standard FD mappings to child (they're inherited)
+    @fd_to_path[args->child_pid, 0] = "<stdin>";
+    @fd_to_path[args->child_pid, 1] = "<stdout>";  
+    @fd_to_path[args->child_pid, 2] = "<stderr>";
+}
+
+// Clean up when processes exit
+tracepoint:sched:sched_process_exit
+/ @tracked[pid] /
+{
+    printf("[%s] EXIT: PID %d (%s)\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm);
+    delete(@tracked[pid]);
+    // Note: FD mappings are cleaned up individually when files are closed
+}
+
+// Clean up FD mappings when files are closed
+tracepoint:syscalls:sys_enter_close
+/ @tracked[pid] /
+{
+    delete(@fd_to_path[pid, args->fd]);
+}
+
+// Monitor execve calls (program execution)
+tracepoint:syscalls:sys_enter_execve
+/ @tracked[pid] /
+{
+    printf("[%s] EXEC: PID %d (%s) -> %s\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, str(args->filename));
+}
+
+// Also catch clone/fork syscalls directly (more comprehensive)
+tracepoint:syscalls:sys_enter_clone
+/ @tracked[pid] /
+{
+    printf("[%s] CLONE: PID %d (%s) creating child\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm);
+}
+
+// Monitor file opens and immediately store the FD mapping on successful open
+tracepoint:syscalls:sys_exit_openat
+/ @tracked[pid] && args->ret >= 0 /
+{
+    // We can't get the filename from exit, so we'll store a generic mapping
+    @fd_to_path[pid, args->ret] = "<file>";
+    printf("[%s] OPEN-SUCCESS: PID %d (%s) fd=%d\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, args->ret);
+}
+
+// Show the open attempt with filename
+tracepoint:syscalls:sys_enter_openat
+/ @tracked[pid] /
+{
+    printf("[%s] OPEN: PID %d (%s) -> %s (flags=%d)\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, 
+           str(args->filename), args->flags);
+}
+
+// Monitor legacy open syscall
+tracepoint:syscalls:sys_enter_open
+/ @tracked[pid] /
+{
+    printf("[%s] OPEN: PID %d (%s) -> %s (flags=%d)\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, 
+           str(args->filename), args->flags);
+}
+
+tracepoint:syscalls:sys_exit_open
+/ @tracked[pid] && args->ret >= 0 /
+{
+    @fd_to_path[pid, args->ret] = "<file>";
+    printf("[%s] OPEN-SUCCESS: PID %d (%s) fd=%d\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, args->ret);
+}
+
+// Monitor file creation
+tracepoint:syscalls:sys_enter_creat
+/ @tracked[pid] /
+{
+    printf("[%s] CREAT: PID %d (%s) -> %s (mode=%o)\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, 
+           str(args->pathname), args->mode);
+}
+
+tracepoint:syscalls:sys_exit_creat
+/ @tracked[pid] && args->ret >= 0 /
+{
+    @fd_to_path[pid, args->ret] = "<created-file>";
+    printf("[%s] CREAT-SUCCESS: PID %d (%s) fd=%d\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, args->ret);
+}
+
+// Monitor reads
+tracepoint:syscalls:sys_enter_read
+/ @tracked[pid] /
+{
+    $path = @fd_to_path[pid, args->fd];
+    if ($path != "") {
+        printf("[%s] READ: PID %d (%s) fd=%d (%s) count=%d\n", 
+               strftime("%H:%M:%S", nsecs), pid, comm, 
+               args->fd, $path, args->count);
+    } else {
+        printf("[%s] READ: PID %d (%s) fd=%d <unknown-file> count=%d\n", 
+               strftime("%H:%M:%S", nsecs), pid, comm, 
+               args->fd, args->count);
+    }
+}
+
+
+END
+{
+    printf("\n=== Monitoring ended at %s ===\n", strftime("%Y-%m-%d %H:%M:%S", nsecs));
+}
