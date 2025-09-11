@@ -51,7 +51,7 @@ struct Arguments
 			throw std::invalid_argument("missing argument #1: root path");
 		}
 		
-		result.root_path_ = argv[1];
+		result.root_path_ = std::string(std::filesystem::canonical(argv[1]));
 		if (not std::filesystem::exists(result.root_path_))
 		{
 			throw std::runtime_error(std::format("argument #1: root path {}: file does not exist", result.root_path_));
@@ -171,7 +171,7 @@ struct Unbreq
 		auto path_buf = std::make_unique<char[]>(PATH_MAX);
 		
 		auto memory_resource = std::pmr::monotonic_buffer_resource();
-		auto names = std::pmr::set<std::string>(std::pmr::polymorphic_allocator<>(&memory_resource));
+		auto names = std::pmr::set<std::string, std::less<>>(std::pmr::polymorphic_allocator<>(&memory_resource));
 		
 		std::fprintf(stderr, "INFO: ready to monitor file accesses...\n");
 		
