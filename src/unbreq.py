@@ -157,6 +157,11 @@ class Unbreq(object):
     # TODO enable only for successful builds
     @traceLog()
     def _PostBuildHook(self):
+        
+        # self.buildroot.state.result
+        
+        # self.buildroot.pkg_manager.name
+        
         getLog().info("enabled unbreq plugin (postbuild)")
         if self.unbreq_process is None:
             return
