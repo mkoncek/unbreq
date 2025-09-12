@@ -168,6 +168,16 @@ class Unbreq(object):
         if self.buildroot.state.result != "success":
             return
         getLog().info("enabled unbreq plugin (postbuild)")
+
+        try:
+            mount_options_process = subprocess.run(["findmnt", "-n", "-o", "OPTIONS", "--target", self.buildroot.rootdir], check = True, text = True, capture_output = True)
+            if mount_options_process:
+                for option in mount_options_process.stdout.rstrip().split(","):
+                    if option == "relatime" or option == "noatime":
+                        getLog().warning("unbreq plugin: chroot %s is on a filesystem mounted with the '%s' option; detection will not work correctly, you may want to remount the proper directory with mount options 'strictatime,lazytime'", self.buildroot.rootdir, option)
+        except FileNotFoundError:
+            pass
+
         if self.USE_NSPAWN:
             self.resolve_buildrequires()
         else:
