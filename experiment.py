@@ -4,14 +4,15 @@
 #
 # This script monitors file access syscalls (openat, execve) for a specific
 # process and all its descendants, but only if the process is an "rpmbuild" process.
-# It uses stable tracepoints for reliability and will auto-exit when all
-# monitored rpmbuild processes have finished.
+# It uses stable tracepoints for reliability.
 #
 # Usage: sudo ./bcc_file_monitor.py <PID>
 
 from bcc import BPF
 import argparse
 import ctypes as ct
+import os
+import subprocess
 
 # Argument parsing
 parser = argparse.ArgumentParser(
@@ -32,7 +33,7 @@ enum event_type {
     EVENT_EXEC,
     EVENT_FORK,
     EVENT_RPMBUILD_START,
-    EVENT_RPMBUILD_EXIT,
+    EVENT_PROCESS_EXIT,
 };
 
 // Data structure to pass event information from kernel to user-space
@@ -42,6 +43,7 @@ struct data_t {
     u32 ppid; // Parent PID, used for fork
     char comm[TASK_COMM_LEN];
     char filename[256];
+    u8 is_rpmbuild; // Flag for exit event
 };
 
 BPF_PERF_OUTPUT(events);
@@ -78,23 +80,25 @@ TRACEPOINT_PROBE(sched, sched_process_fork)
 // Trace process exits to clean up maps
 TRACEPOINT_PROBE(sched, sched_process_exit)
 {
-    // In tracepoints, the process being exited is the current one
     u32 pid = bpf_get_current_pid_tgid() >> 32;
 
-    // If it was a tracked process, remove it
+    // If it was a tracked process, send an exit event and clean up.
     if (tracked_pids.lookup(&pid)) {
-        tracked_pids.delete(&pid);
-    }
-
-    // If it was an rpmbuild process, also remove it and notify user-space
-    if (rpmbuild_pids.lookup(&pid)) {
-        rpmbuild_pids.delete(&pid);
-
         struct data_t data = {};
-        data.type = EVENT_RPMBUILD_EXIT;
+        data.type = EVENT_PROCESS_EXIT;
         data.pid = pid;
         bpf_get_current_comm(&data.comm, sizeof(data.comm));
+
+        // Check if it was an rpmbuild process
+        if (rpmbuild_pids.lookup(&pid)) {
+            data.is_rpmbuild = 1;
+            rpmbuild_pids.delete(&pid);
+        } else {
+            data.is_rpmbuild = 0;
+        }
+
         events.perf_submit(args, &data, sizeof(data));
+        tracked_pids.delete(&pid);
     }
     return 0;
 }
@@ -190,8 +194,6 @@ TRACEPOINT_PROBE(syscalls, sys_enter_execve)
                 struct data_t data = {};
                 data.type = EVENT_RPMBUILD_START;
                 data.pid = pid;
-                // At sys_enter_execve, comm is the *old* name. The new name is in filename.
-                // We'll just use the old name for this event for simplicity.
                 bpf_get_current_comm(&data.comm, sizeof(data.comm));
                 events.perf_submit(args, &data, sizeof(data));
             }
@@ -206,9 +208,8 @@ TRACEPOINT_PROBE(syscalls, sys_enter_execve)
 
 # --- Python User-space Code ---
 
-# A set to keep track of active rpmbuild PIDs for the auto-exit logic
-active_rpmbuild_pids = set()
-should_exit = False
+# Cache for PID info: {pid: (comm, exe_path)}
+pid_cache = {}
 
 # Python representation of the data_t struct
 class Data(ct.Structure):
@@ -218,46 +219,63 @@ class Data(ct.Structure):
         ("ppid", ct.c_uint),
         ("comm", ct.c_char * 16), # TASK_COMM_LEN
         ("filename", ct.c_char * 256),
+        ("is_rpmbuild", ct.c_uint8),
     ]
+
+def get_process_info(pid):
+    """
+    Resolves PID to its command name and full executable path.
+    Uses a cache to avoid repeated /proc lookups.
+    """
+    if pid in pid_cache:
+        return pid_cache[pid]
+
+    try:
+        path = os.readlink(f"/proc/{pid}/exe")
+        comm = open(f"/proc/{pid}/comm").read().strip()
+        pid_cache[pid] = (comm, path)
+        return comm, path
+    except FileNotFoundError:
+        # Process may have exited between event and this lookup
+        return (b'<exited>', b'<unknown>')
 
 # Callback function to process events from the kernel
 def print_event(cpu, data, size):
-    global active_rpmbuild_pids, should_exit
     event = ct.cast(data, ct.POINTER(Data)).contents
 
-    type_str = "UNKNOWN"
-    details = ""
+    event_type = event.type
+    pid = event.pid
 
-    if event.type == 0: # EVENT_OPEN
-        type_str = "OPENAT"
+    if event_type == 0: # EVENT_OPEN
+        comm, path = get_process_info(pid)
         details = f"-> {event.filename.decode('utf-8', 'replace')}"
-        print(f"{type_str:<18}: PID {event.pid:<6} ({event.comm.decode('utf-8', 'replace'):<16}) {details}")
-    elif event.type == 1: # EVENT_EXEC
-        type_str = "EXEC"
-        details = f"-> {event.filename.decode('utf-8', 'replace')}"
-        print(f"{type_str:<18}: PID {event.pid:<6} ({event.comm.decode('utf-8', 'replace'):<16}) {details}")
-    elif event.type == 2: # EVENT_FORK
-        type_str = "FORK"
-        details = f"{event.ppid} -> {event.pid}"
-        print(f"{type_str:<18}: {details} ({event.comm.decode('utf-8', 'replace')})")
-    elif event.type == 3: # EVENT_RPMBUILD_START
-        pid = event.pid
-        comm = event.comm.decode('utf-8', 'replace')
-        print(f"{'RPMBUILD STARTED':<18}: PID {pid:<6} ({comm:<16}) - now tracking.")
-        active_rpmbuild_pids.add(pid)
-    elif event.type == 4: # EVENT_RPMBUILD_EXIT
-        pid = event.pid
-        comm = event.comm.decode('utf-8', 'replace')
-        if pid in active_rpmbuild_pids:
-            active_rpmbuild_pids.remove(pid)
-        print(f"{'RPMBUILD EXITED':<18}: PID {pid:<6} ({comm:<16}) - {len(active_rpmbuild_pids)} remain.")
-        # If the last rpmbuild process we knew about exits, we can stop.
-        if len(active_rpmbuild_pids) == 0:
-            should_exit = True
+        print(f"{'OPENAT':<18}: {path} ({pid}) {'':<16} {details}")
+    elif event_type == 1: # EVENT_EXEC
+        # At exec, the old path is still valid for the PID, but the new one is in filename
+        _comm, old_path = get_process_info(pid)
+        new_path = event.filename.decode('utf-8', 'replace')
+        print(f"{'EXEC':<18}: {old_path} ({pid}) -> {new_path}")
+        # Invalidate cache, it will be repopulated on the next event
+        if pid in pid_cache:
+            del pid_cache[pid]
+    elif event_type == 2: # EVENT_FORK
+        ppid = event.ppid
+        pcomm, ppath = get_process_info(ppid)
+        details = f"{ppath} ({ppid}) -> {pid}"
+        print(f"{'FORK':<18}: {details}")
+    elif event_type == 3: # EVENT_RPMBUILD_START
+        comm, path = get_process_info(pid)
+        print(f"{'RPMBUILD STARTED':<18}: {path} ({pid}) - now tracking.")
+    elif event_type == 4: # EVENT_PROCESS_EXIT
+        comm, path = get_process_info(pid)
+        exit_type = "RPMBUILD" if event.is_rpmbuild else "PROCESS"
+        print(f"{exit_type + ' EXITED':<18}: {path} ({pid})")
+        if pid in pid_cache:
+            del pid_cache[pid]
 
 # --- Main Program ---
 print(f"=== Tracking file accesses for PID {args.pid} tree (if rpmbuild is involved) ===")
-print("Hit Ctrl-C to end, or wait for all rpmbuild processes to finish...")
+print("Hit Ctrl-C to end...")
 
 # Load BPF program, replacing the placeholder with the actual PID
 b = BPF(text=bpf_text.replace('TARGET_PID', str(args.pid)))
@@ -267,10 +285,9 @@ b["events"].open_perf_buffer(print_event)
 
 # Main loop to process events
 try:
-    while not should_exit:
-        b.perf_buffer_poll(timeout=1000) # Poll with a timeout to check the should_exit flag
+    while True:
+        b.perf_buffer_poll()
 except KeyboardInterrupt:
     print("\n=== Tracking ended by user ===")
     exit()
 
-print("\n=== All rpmbuild processes finished. Tracking ended. ===")
