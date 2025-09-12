@@ -4,21 +4,14 @@
 Name:           unbreq
 Version:        0^20250403.%{git_short_ref}
 Release:        %autorelease
-Summary:        Mock plugin - detector of unneeded BuildRequires
+Summary:        Mock plugin - detector of unused BuildRequires
 License:        Apache-2.0
 URL:            https://github.com/mkoncek/unbreq
 
 Source0:        https://github.com/mkoncek/unbreq/archive/%{git_ref}.tar.gz#/%{name}-%{version}.tar.gz
 
-BuildRequires:  gcc-c++
-BuildRequires:  make
-
 BuildRequires:  python3
 BuildRequires:  python3-rpm-macros
-
-BuildRequires:  pkgconfig(rpm)
-BuildRequires:  pkgconfig(libdnf5)
-BuildRequires:  pkgconfig(libdnf5-cli)
 
 %description
 %{summary}.
@@ -30,16 +23,11 @@ BuildRequires:  pkgconfig(libdnf5-cli)
 %{make_build}
 
 %install
-export buildroot=%{buildroot}
-export libexecdir=%{_libexecdir}
-export python3_sitelib=%{python3_sitelib}
-
-make install
+install -m 755 -D -t %{buildroot}%{python3_sitelib}/mockbuild/plugins src/unbreq.py
 
 %files
 %license LICENSE
 %doc README.adoc
-%{_libexecdir}/unbreq
 %pycached %{python3_sitelib}/mockbuild/plugins/unbreq.py
 
 %changelog
