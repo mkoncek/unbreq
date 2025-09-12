@@ -23,13 +23,13 @@ struct data_t {
     u32 ppid;
     char comm[TASK_COMM_LEN];
     char filename[256];
-    int type;  // 0=openat, 1=execve, 2=fork, 3=rpmbuild_found
+    int type;  // 0=openat, 1=execve, 2=fork, 3=rpmbuild_found, 4=process_exit
 };
 
 BPF_PERF_OUTPUT(events);
 
 // Check if target PID is rpmbuild and start tracking
-TRACEPOINT_PROBE(syscalls, sys_enter_openat)
+int trace_openat_entry(struct pt_regs *ctx)
 {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     u32 zero = 0;
@@ -57,7 +57,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_openat)
                 data.pid = pid;
                 data.type = 3; // rpmbuild_found
                 bpf_get_current_comm(&data.comm, sizeof(data.comm));
-                events.perf_submit(args, &data, sizeof(data));
+                events.perf_submit(ctx, &data, sizeof(data));
             }
         }
     }
@@ -78,7 +78,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_openat)
             data.pid = pid;
             data.type = 3; // rpmbuild_found
             bpf_get_current_comm(&data.comm, sizeof(data.comm));
-            events.perf_submit(args, &data, sizeof(data));
+            events.perf_submit(ctx, &data, sizeof(data));
         }
     }
     
@@ -90,17 +90,32 @@ TRACEPOINT_PROBE(syscalls, sys_enter_openat)
         data.type = 0; // openat
         bpf_get_current_comm(&data.comm, sizeof(data.comm));
         
-        // Get filename from tracepoint arguments
-        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), (void *)args->filename);
+        // Get filename - try different parameter access methods
+        struct pt_regs *regs = (struct pt_regs *)PT_REGS_PARM1(ctx);
+        char *filename_ptr = NULL;
+        if (regs) {
+            filename_ptr = (char *)regs->si;  // RSI register for openat's pathname
+        } else {
+            filename_ptr = (char *)PT_REGS_PARM2(ctx);  // Fallback
+        }
         
-        events.perf_submit(args, &data, sizeof(data));
+        if (filename_ptr != NULL) {
+            int ret = bpf_probe_read_user_str(&data.filename, sizeof(data.filename), filename_ptr);
+            if (ret < 0) {
+                __builtin_memcpy(&data.filename, "<read_failed>", 14);
+            }
+        } else {
+            __builtin_memcpy(&data.filename, "<null>", 7);
+        }
+        
+        events.perf_submit(ctx, &data, sizeof(data));
     }
     
     return 0;
 }
 
 // Monitor execve calls
-TRACEPOINT_PROBE(syscalls, sys_enter_execve)
+int trace_execve_entry(struct pt_regs *ctx)
 {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     
@@ -120,7 +135,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_execve)
             data.pid = pid;
             data.type = 3; // rpmbuild_found
             bpf_get_current_comm(&data.comm, sizeof(data.comm));
-            events.perf_submit(args, &data, sizeof(data));
+            events.perf_submit(ctx, &data, sizeof(data));
         }
     }
     
@@ -132,10 +147,25 @@ TRACEPOINT_PROBE(syscalls, sys_enter_execve)
         data.type = 1; // execve
         bpf_get_current_comm(&data.comm, sizeof(data.comm));
         
-        // Get filename from tracepoint arguments
-        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), (void *)args->filename);
+        // Get filename - try different parameter access methods
+        struct pt_regs *regs = (struct pt_regs *)PT_REGS_PARM1(ctx);
+        char *filename_ptr = NULL;
+        if (regs) {
+            filename_ptr = (char *)regs->di;  // RDI register for execve's filename
+        } else {
+            filename_ptr = (char *)PT_REGS_PARM1(ctx);  // Fallback
+        }
         
-        events.perf_submit(args, &data, sizeof(data));
+        if (filename_ptr != NULL) {
+            int ret = bpf_probe_read_user_str(&data.filename, sizeof(data.filename), filename_ptr);
+            if (ret < 0) {
+                __builtin_memcpy(&data.filename, "<read_failed>", 14);
+            }
+        } else {
+            __builtin_memcpy(&data.filename, "<null>", 7);
+        }
+        
+        events.perf_submit(ctx, &data, sizeof(data));
     }
     
     return 0;
@@ -206,13 +236,29 @@ int trace_do_fork_return(struct pt_regs *ctx)
 int trace_do_exit(struct pt_regs *ctx, long code)
 {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    // Check if this was an rpmbuild process and notify userspace
+    u8 *was_rpmbuild = rpmbuild_pids.lookup(&pid);
+    if (was_rpmbuild) {
+        struct data_t data = {};
+        data.pid = pid;
+        data.type = 4; // process_exit
+        bpf_get_current_comm(&data.comm, sizeof(data.comm));
+        events.perf_submit(ctx, &data, sizeof(data));
+    }
+    
     tracked.delete(&pid);
     rpmbuild_pids.delete(&pid);
     return 0;
 }
 """
 
+# Track active rpmbuild processes
+active_rpmbuild_pids = set()
+should_exit = False
+
 def print_event(cpu, data, size):
+    global active_rpmbuild_pids, should_exit
     event = b["events"].event(data)
     
     if event.type == 0:  # openat
@@ -223,6 +269,16 @@ def print_event(cpu, data, size):
         print(f"FORK: {event.ppid} -> {event.pid}")
     elif event.type == 3:  # rpmbuild_found
         print(f"Found rpmbuild process: PID {event.pid} - marking for tracking")
+        active_rpmbuild_pids.add(event.pid)
+    elif event.type == 4:  # process_exit
+        pid = event.pid
+        comm = event.comm.decode('utf-8', 'replace')
+        if pid in active_rpmbuild_pids:
+            active_rpmbuild_pids.remove(pid)
+            print(f"rpmbuild process PID {pid} ({comm}) exited - {len(active_rpmbuild_pids)} rpmbuild processes remaining")
+            if len(active_rpmbuild_pids) == 0:
+                print("\n=== All rpmbuild processes have finished - stopping monitoring ===")
+                should_exit = True
 
 def main():
     parser = argparse.ArgumentParser(description='Track file accesses starting from rpmbuild processes')
@@ -236,18 +292,32 @@ def main():
     target_array = b.get_table("target_pid")
     target_array[ct.c_uint32(0)] = ct.c_uint32(args.pid)
     
-    # Attach syscall tracepoints for better parameter access
-    try:
-        b.attach_tracepoint(tp="syscalls:sys_enter_openat", fn_name="trace_openat_entry")
-        print("Attached to syscalls:sys_enter_openat tracepoint")
-    except Exception as e:
-        print(f"Warning: Could not attach to openat tracepoint: {e}")
-    
-    try:
-        b.attach_tracepoint(tp="syscalls:sys_enter_execve", fn_name="trace_execve_entry")
-        print("Attached to syscalls:sys_enter_execve tracepoint")
-    except Exception as e:
-        print(f"Warning: Could not attach to execve tracepoint: {e}")
+    # Attach syscall kprobes for parameter access
+    # Try multiple openat function names
+    openat_attached = False
+    for openat_func in ["__x64_sys_openat", "do_sys_openat2", "do_sys_open"]:
+        try:
+            b.attach_kprobe(event=openat_func, fn_name="trace_openat_entry")
+            print(f"Attached to {openat_func}")
+            openat_attached = True
+            break
+        except:
+            continue
+    if not openat_attached:
+        print("Warning: Could not attach to any openat function")
+
+    # Try multiple execve function names
+    execve_attached = False
+    for execve_func in ["__x64_sys_execve", "do_execveat", "__se_sys_execve"]:
+        try:
+            b.attach_kprobe(event=execve_func, fn_name="trace_execve_entry")
+            print(f"Attached to {execve_func}")
+            execve_attached = True
+            break
+        except:
+            continue
+    if not execve_attached:
+        print("Warning: Could not attach to any execve function")
     
     try:
         b.attach_kprobe(event="__x64_sys_clone", fn_name="trace_do_fork")
@@ -273,14 +343,14 @@ def main():
         print("Warning: Could not attach to exit function")
     
     print(f"=== Tracking file accesses starting from rpmbuild processes (monitoring PID {args.pid} tree) ===")
-    print("Hit Ctrl-C to end...")
+    print("Hit Ctrl-C to end, or wait for all rpmbuild processes to finish...")
     
     # Process events
     b["events"].open_perf_buffer(print_event)
     
     try:
-        while True:
-            b.perf_buffer_poll()
+        while not should_exit:
+            b.perf_buffer_poll(timeout=1000)  # Poll with 1 second timeout to check should_exit
     except KeyboardInterrupt:
         print("\n=== Tracking ended ===")
 
