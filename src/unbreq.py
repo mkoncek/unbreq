@@ -13,6 +13,8 @@ import subprocess
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+import time
+
 requires_api_version = "1.1"
 
 # plugin entry point

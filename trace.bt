@@ -16,6 +16,9 @@ BEGIN
     @fd_to_path[@target, 0] = "<stdin>";
     @fd_to_path[@target, 1] = "<stdout>";  
     @fd_to_path[@target, 2] = "<stderr>";
+    
+    // Initialize pending filename storage with empty string to establish type
+    @pending_files[0] = "";
 }
 
 // When a tracked process forks/clones, track the child too
@@ -40,6 +43,7 @@ tracepoint:sched:sched_process_exit
     printf("[%s] EXIT: PID %d (%s)\n", 
            strftime("%H:%M:%S", nsecs), pid, comm);
     delete(@tracked[pid]);
+    delete(@pending_files[pid]);
     // Note: FD mappings are cleaned up individually when files are closed
 }
 
@@ -66,29 +70,31 @@ tracepoint:syscalls:sys_enter_clone
            strftime("%H:%M:%S", nsecs), pid, comm);
 }
 
-// Monitor file opens and immediately store the FD mapping on successful open
-tracepoint:syscalls:sys_exit_openat
-/ @tracked[pid] && args->ret >= 0 /
-{
-    // We can't get the filename from exit, so we'll store a generic mapping
-    @fd_to_path[pid, args->ret] = "<file>";
-    printf("[%s] OPEN-SUCCESS: PID %d (%s) fd=%d\n", 
-           strftime("%H:%M:%S", nsecs), pid, comm, args->ret);
-}
-
-// Show the open attempt with filename
+// Store filename when open is attempted
 tracepoint:syscalls:sys_enter_openat
 / @tracked[pid] /
 {
+    @pending_files[pid] = str(args->filename);
     printf("[%s] OPEN: PID %d (%s) -> %s (flags=%d)\n", 
            strftime("%H:%M:%S", nsecs), pid, comm, 
            str(args->filename), args->flags);
+}
+
+// Connect filename to FD when open succeeds
+tracepoint:syscalls:sys_exit_openat  
+/ @tracked[pid] && args->ret >= 0 /
+{
+    @fd_to_path[pid, args->ret] = @pending_files[pid];
+    printf("[%s] OPEN-SUCCESS: PID %d (%s) fd=%d -> %s\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, args->ret, @pending_files[pid]);
+    delete(@pending_files[pid]);
 }
 
 // Monitor legacy open syscall
 tracepoint:syscalls:sys_enter_open
 / @tracked[pid] /
 {
+    @pending_files[pid] = str(args->filename);
     printf("[%s] OPEN: PID %d (%s) -> %s (flags=%d)\n", 
            strftime("%H:%M:%S", nsecs), pid, comm, 
            str(args->filename), args->flags);
@@ -97,15 +103,17 @@ tracepoint:syscalls:sys_enter_open
 tracepoint:syscalls:sys_exit_open
 / @tracked[pid] && args->ret >= 0 /
 {
-    @fd_to_path[pid, args->ret] = "<file>";
-    printf("[%s] OPEN-SUCCESS: PID %d (%s) fd=%d\n", 
-           strftime("%H:%M:%S", nsecs), pid, comm, args->ret);
+    @fd_to_path[pid, args->ret] = @pending_files[pid];
+    printf("[%s] OPEN-SUCCESS: PID %d (%s) fd=%d -> %s\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, args->ret, @pending_files[pid]);
+    delete(@pending_files[pid]);
 }
 
 // Monitor file creation
 tracepoint:syscalls:sys_enter_creat
 / @tracked[pid] /
 {
+    @pending_files[pid] = str(args->pathname);
     printf("[%s] CREAT: PID %d (%s) -> %s (mode=%o)\n", 
            strftime("%H:%M:%S", nsecs), pid, comm, 
            str(args->pathname), args->mode);
@@ -114,9 +122,10 @@ tracepoint:syscalls:sys_enter_creat
 tracepoint:syscalls:sys_exit_creat
 / @tracked[pid] && args->ret >= 0 /
 {
-    @fd_to_path[pid, args->ret] = "<created-file>";
-    printf("[%s] CREAT-SUCCESS: PID %d (%s) fd=%d\n", 
-           strftime("%H:%M:%S", nsecs), pid, comm, args->ret);
+    @fd_to_path[pid, args->ret] = @pending_files[pid];
+    printf("[%s] CREAT-SUCCESS: PID %d (%s) fd=%d -> %s\n", 
+           strftime("%H:%M:%S", nsecs), pid, comm, args->ret, @pending_files[pid]);
+    delete(@pending_files[pid]);
 }
 
 // Monitor reads
@@ -138,5 +147,6 @@ tracepoint:syscalls:sys_enter_read
 
 END
 {
+    delete(@pending_files[0]); // Clean up type-establishment entry
     printf("\n=== Monitoring ended at %s ===\n", strftime("%Y-%m-%d %H:%M:%S", nsecs));
 }

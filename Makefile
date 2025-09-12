@@ -45,9 +45,9 @@ target/bin/resolve: LDFLAGS += $(shell pkg-config --libs libdnf5 libdnf5-cli rpm
 target/bin/resolve: target/object_files/resolve.o target/object_files/rpmquery.o
 
 install-link: target/bin/fanotify
-	ln -s -t $(python3_sitelib)/mockbuild/plugins/ $$(readlink -f src/unbreq.py)
+	ln -s -f -t $(python3_sitelib)/mockbuild/plugins/ $$(readlink -f src/unbreq.py)
 	mkdir -p $(libexecdir)/unbreq
-	ln -s -t $(libexecdir)/unbreq $$(readlink -f target/bin/fanotify target/bin/resolve)
+	ln -s -f -t $(libexecdir)/unbreq $$(readlink -f target/bin/fanotify target/bin/resolve)
 	ls -l $(python3_sitelib)/mockbuild/plugins/unbreq.py $(libexecdir)/unbreq/*
 
 install: target/bin/fanotify
