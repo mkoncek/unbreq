@@ -11,9 +11,15 @@ import rpm
 import pathlib
 import subprocess
 import os
-from concurrent.futures import ThreadPoolExecutor
+import re
 
 requires_api_version = "1.1"
+
+class AtimeDict(dict):
+    def __missing__(self, key):
+        result = os.stat(key).st_atime
+        self[key] = result
+        return result
 
 # plugin entry point
 @traceLog()
@@ -45,13 +51,11 @@ class Unbreq(object):
         self.buildroot = buildroot
         self.showrc_opts = conf
         self.config = buildroot.config
-
-        self.files_output = None
-        self.unbreq_process = None
-
+        self.min_time = None
         self.USE_NSPAWN = mockbuild.util.USE_NSPAWN
-        
-        self.exclude_accessed_files = self.config.get("plugin_conf", {}).get("unbreq_exclude_accessed_files", [])
+        self.exclude_accessed_files = [re.compile(r) for r in self.config.get("plugin_conf", {}).get("unbreq_opts", {}).get("exclude_accessed_files", [])]
+        self.accessed_files = AtimeDict()
+
         plugins.add_hook("prebuild", self._PreBuildHook)
         plugins.add_hook("postbuild", self._PostBuildHook)
 
@@ -61,7 +65,7 @@ class Unbreq(object):
             chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--pipe", "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir]
         else:
             chroot_command = ["/usr/bin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
-        chroot_dnf_command = chroot_command + ["/usr/bin/dnf", "--installroot", self.buildroot.rootdir]
+        chroot_pkg_manager_command = chroot_command + ["/usr/bin/" + self.buildroot.pkg_manager.name, "--installroot", self.buildroot.rootdir]
         srpm_dir = pathlib.Path(self.buildroot.rootdir + os.path.join(self.buildroot.builddir, "SRPMS"))
 
         def get_files(packages):
@@ -82,7 +86,7 @@ class Unbreq(object):
         for srpm in srpm_dir.iterdir():
             for br in get_buildrequires(str(srpm)):
                 process = subprocess.run(
-                    chroot_dnf_command + ["repoquery", "--installed", "--whatprovides", br],
+                    chroot_pkg_manager_command + ["repoquery", "--installed", "--whatprovides", br],
                     stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
                 )
                 if process.returncode != 0:
@@ -112,7 +116,7 @@ class Unbreq(object):
 
         brs_can_be_removed = list()
         for br, providers in br_providers.items():
-            process = subprocess.run(chroot_dnf_command + ["--assumeno", "remove"] + [v for vs in brs_can_be_removed for v in vs[1]] + providers,
+            process = subprocess.run(chroot_pkg_manager_command + ["--assumeno", "remove"] + [v for vs in brs_can_be_removed for v in vs[1]] + providers,
                 stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
             )
             if process.returncode != 1:
@@ -130,80 +134,43 @@ class Unbreq(object):
                 removed_packages.append(nvr)
             can_be_removed = True
             for path in get_files(removed_packages):
-                if path in self.accessed_files:
-                    can_be_removed = False
-                    break
+                path = self.buildroot.rootdir + path
+                try:
+                    atime = self.accessed_files[path]
+                except FileNotFoundError:
+                    continue
+                if atime > self.min_time:
+                    short_path = path[len(self.buildroot.rootdir):]
+                    skip = False
+                    for r in self.exclude_accessed_files:
+                        if r.search(short_path) is not None:
+                            skip = True
+                            break
+                    else:
+                        can_be_removed = False
+                        break
             if can_be_removed:
                 brs_can_be_removed.append((br, providers))
         if len(brs_can_be_removed) != 0:
             brs = list(map(lambda t: t[0], brs_can_be_removed))
-            getLog().warning("unbreq plugin: the following BuildRequires were not used: %s", ", ".join(brs))
+            getLog().warning("unbreq plugin: the following BuildRequires were not used:\n\t%s", "\n\t".join(brs))
 
     @traceLog()
     def _PreBuildHook(self):
         getLog().info("enabled unbreq plugin (prebuild)")
-        self.files_output = os.memfd_create("accessed_files", 0)
-        exclude_accessed_files_flags = [elem for regex in self.exclude_accessed_files for elem in ("-e", regex)]
-        self.unbreq_process = subprocess.Popen(
-            ["/usr/libexec/unbreq/fanotify", self.buildroot.rootdir, str(self.files_output)] + exclude_accessed_files_flags,
-            stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
-            pass_fds = [self.files_output],
-        )
-        getLog().info("unbreq plugin: started process:\n%s", self.unbreq_process.args)
-        line = self.unbreq_process.stderr.readline()
-        if line != b"INFO: ready to monitor file accesses...\n":
-            getLog().error("unbreq plugin: unexpected message: %s", line.decode("utf-8").rstrip())
+        # NOTE maybe find a better example file to touch to get an atime?
+        path = os.path.join(self.buildroot.rootdir, "dev", "null")
+        subprocess.run(["touch", path], check = True)
+        self.min_time = os.stat(path).st_atime
 
-    # TODO enable only for successful builds
     @traceLog()
     def _PostBuildHook(self):
-        
-        # self.buildroot.state.result
-        
-        # self.buildroot.pkg_manager.name
-        
-        getLog().info("enabled unbreq plugin (postbuild)")
-        if self.unbreq_process is None:
+        if self.buildroot.state.result != "success":
             return
-        with self.unbreq_process as unbreq_process:
-            stdout, stderr = unbreq_process.communicate("")
-            if unbreq_process.wait() != 0:
-                getLog().error("unbreq plugin: process %s returned %s: %s",
-                    unbreq_process.args, unbreq_process.returncode, stderr.decode("utf-8").rstrip(),
-                )
-            else:
-                stderr = stderr.decode("utf-8").rstrip()
-                if len(stderr) != 0:
-                    getLog().warning("unbreq plugin: process %s: %s",
-                        unbreq_process.args, stderr,
-                    )
-
-        process = subprocess.run(
-            [
-                "/usr/libexec/unbreq/resolve",
-                str(self.files_output),
-                self.buildroot.rootdir + os.path.join(self.buildroot.builddir, "SRPMS"),
-                self.buildroot.rootdir,
-            ],
-            capture_output = True,
-            pass_fds = [self.files_output],
-        )
-        if process.returncode == 0:
-            brs = process.stdout.decode("utf-8").splitlines()
-            if len(brs) > 0:
-                getLog().warning("unbreq plugin: the following BuildRequires were not used: \n\t%s", "\n\t".join(brs))
+        getLog().info("enabled unbreq plugin (postbuild)")
+        if self.USE_NSPAWN:
+            self.resolve_buildrequires()
         else:
-            getLog().error("unbreq resolution failed with %s, command was:\n%s:\n%s",
-                process.returncode, process.args, process.stderr.decode("utf-8").rstrip(),
-            )
-
-        # self.accessed_files = set()
-        # with os.fdopen(self.files_output, "r") as accessed_files_stream:
-        #     for line in accessed_files_stream:
-        #         self.accessed_files.add(line.strip())
-        # if self.USE_NSPAWN:
-        #     self.resolve_buildrequires()
-        # else:
-        #     with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
-        #         self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
-        #         self.resolve_buildrequires()
+            with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
+                self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
+                self.resolve_buildrequires()

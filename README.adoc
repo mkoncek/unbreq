@@ -2,75 +2,40 @@
 
 Detector of unused `BuildRequires` of RPM builds.
 
-== Building
-Build the project:
-
-----
-$ make all
-----
-
-Either install or install symlink of the Python plugin and the executable file watcher:
-
-----
-# make install
-----
-
-----
-# make install-link
-----
-
-To uninstall:
-
-----
-# make uninstall
-----
-
 == Usage
-This project is currently implemented as a mock plugin.
-The native part uses `fanotify` to watch filesystem accesses.
+[NOTE]
+====
+The current implementation requires working `strictatime`.
 
-To run it, install it and then enable it from the command line:
+You may need to remount your mock chroot directory with options `strictatime,lazytime`.
+====
+
+To run it, install the Python script into the system `mock` plugin directory.
+Then enable it upon `mock` execution via a flag:
 
 ----
-mock --enable-plugin=unbreq
+mock --enable-plugin=unbreq ...
 ----
 
 In logs you should see messages like:
 
 ----
-INFO: enabled unbreq plugin
+INFO: enabled unbreq plugin(prebuild)
 ----
 
 If Unbreq detects an unneeded `BuildRequire` it prints a message like:
 
 ----
-Unbreq plugin: the following BuildRequires were not used: ${packages}
+WARNING: unbreq plugin: the following BuildRequires were not used:
+...
 ----
 
 === Configuration
 The mock plugin reads these mock configuration fields for `config_opts`:
 
-`['plugin_conf']['unbreq_exclude_accessed_files']` : `List[String]` ::
+`['plugin_conf']['unbreq_opts']['exclude_accessed_files']` : `List[String]` ::
 A list of regular expressions which are used to ignore file accesses of certain files.
 +
 Example: `xmvn` always reads all files inside `/usr/share/maven-metadata/`, the exclusion filter `^/usr/share/maven-metadata/` excludes these files from the listing.
-
-== TODO
-- [ ] `FAN_MARK_MOUNT`
 +
-`fanotify_mark` should be able to work with this parameter instead of `FAN_MARK_FILESYSTEM`.
-For this to work, the mock build needs to happen inside a bind-mounted directory.
-If implemented, we avoid monitoring *all* the filesystem activity and can completely avoid any filtering.
-
-- [ ] Robust mock root binding
-+
-We need to query `dnf` because of potentially complex `BuildRequires` expressions.
-Ideally exactly the binary from the bootstrap root using chroot.
-However, the `dnf` needs to use the build chroot as the `--installroot` so it needs to have access outside of its chroot.
-Currently this is done via `mount --bind` which needs to be unmmounted when the plugin is finished.
-This is fragile and can leave mounted volume if the process is interrupted.
-
-- [*] `libdnf`
-+
-We are currently invoking `dnf` to query needed information.
-It may be possible to use `libdnf` directly.
+The command line syntax is: `--plugin-option='unbreq:exclude_accessed_files=[${python_regexes...}]'`
