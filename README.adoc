@@ -5,9 +5,9 @@ Detector of unused `BuildRequires` of RPM builds.
 == Usage
 [NOTE]
 ====
-The current implementation requires working `strictatime`.
+The current implementation requires that the mock chroot is on a filesystem mounted with the `strictatime` option.
 
-You may need to remount your mock chroot directory with options `strictatime,lazytime`.
+You may need to remount the relevant directory with options `strictatime,lazytime`.
 ====
 
 To run it, install the Python script into the system `mock` plugin directory.
