@@ -173,12 +173,15 @@ class Unbreq(object):
         
         if "relatime" in self.mount_options:
             getLog().info("unbreq plugin: detected 'relatime' mount option, going to set access times of files under %s to 0", self.buildroot.rootdir)
-            for dirname, _, filenames in os.walk(self.buildroot.rootdir, topdown = False, followlinks = True):
+            for dirname, dirnames, filenames in os.walk(self.buildroot.rootdir):
+                # Ignore /dev/
+                if dirname == self.buildroot.rootdir:
+                    dirnames.remove("dev")
                 try:
+                    os.utime(dirname, (0, 0))
                     for filename in filenames:
                         os.utime(os.path.join(dirname, filename), (0, 0))
-                    os.utime(dirname, (0, 0))
-                except (FileNotFoundError, PermissionError):
+                except FileNotFoundError:
                     pass
 
     @traceLog()
