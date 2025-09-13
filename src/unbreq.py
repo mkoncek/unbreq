@@ -55,6 +55,7 @@ class Unbreq(object):
         self.USE_NSPAWN = mockbuild.util.USE_NSPAWN
         self.exclude_accessed_files = [re.compile(r) for r in self.config.get("plugin_conf", {}).get("unbreq_opts", {}).get("exclude_accessed_files", [])]
         self.accessed_files = AtimeDict()
+        self.mount_options = None
 
         plugins.add_hook("prebuild", self._PreBuildHook)
         plugins.add_hook("postbuild", self._PostBuildHook)
@@ -158,10 +159,28 @@ class Unbreq(object):
     @traceLog()
     def _PreBuildHook(self):
         getLog().info("enabled unbreq plugin (prebuild)")
+        
+        try:
+            mount_options_process = subprocess.run(["findmnt", "-n", "-o", "OPTIONS", "--target", self.buildroot.rootdir], check = True, text = True, capture_output = True)
+            if mount_options_process:
+                self.mount_options = mount_options_process.stdout.rstrip().split(",")
+        except FileNotFoundError:
+            pass
+        
         # NOTE maybe find a better example file to touch to get an atime?
         path = os.path.join(self.buildroot.rootdir, "dev", "null")
         subprocess.run(["touch", path], check = True)
         self.min_time = os.stat(path).st_atime
+        
+        if "relatime" in self.mount_options:
+            getLog().info("unbreq plugin: detected 'relatime' mount option, going to set access times of files under %s to 0", self.buildroot.rootdir)
+            for dirname, _, filenames in os.walk(self.buildroot.rootdir, topdown = False, followlinks = True):
+                try:
+                    for filename in filenames:
+                        os.utime(os.path.join(dirname, filename), (0, 0))
+                    os.utime(dirname, (0, 0))
+                except (FileNotFoundError, PermissionError):
+                    pass
 
     @traceLog()
     def _PostBuildHook(self):
@@ -169,14 +188,8 @@ class Unbreq(object):
             return
         getLog().info("enabled unbreq plugin (postbuild)")
 
-        try:
-            mount_options_process = subprocess.run(["findmnt", "-n", "-o", "OPTIONS", "--target", self.buildroot.rootdir], check = True, text = True, capture_output = True)
-            if mount_options_process:
-                for option in mount_options_process.stdout.rstrip().split(","):
-                    if option == "relatime" or option == "noatime":
-                        getLog().warning("unbreq plugin: chroot %s is on a filesystem mounted with the '%s' option; detection will not work correctly, you may want to remount the proper directory with mount options 'strictatime,lazytime'", self.buildroot.rootdir, option)
-        except FileNotFoundError:
-            pass
+        if "noatime" in self.mount_options:
+            getLog().warning("unbreq plugin: chroot %s is on a filesystem mounted with the 'noatime' option; detection will not work correctly, you may want to remount the proper directory with mount options 'strictatime,lazytime'", self.buildroot.rootdir)
 
         if self.USE_NSPAWN:
             self.resolve_buildrequires()

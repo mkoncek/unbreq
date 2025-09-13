@@ -5,7 +5,7 @@ Detector of unused `BuildRequires` of RPM builds.
 == Usage
 [NOTE]
 ====
-The current implementation requires that the mock chroot is on a filesystem mounted with the `strictatime` option.
+The current implementation requires that the mock chroot is not on a filesystem mounted with the `noatime` option.
 
 You may need to remount the relevant directory with options `strictatime,lazytime`.
 ====
