@@ -8,7 +8,6 @@ import mockbuild.util
 import mockbuild.mounts
 
 import rpm
-import pathlib
 import subprocess
 import os
 import re
@@ -67,7 +66,7 @@ class Unbreq(object):
         else:
             chroot_command = ["/usr/bin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
         chroot_pkg_manager_command = chroot_command + ["/usr/bin/" + self.buildroot.pkg_manager.name, "--installroot", self.buildroot.rootdir]
-        srpm_dir = pathlib.Path(self.buildroot.rootdir + os.path.join(self.buildroot.builddir, "SRPMS"))
+        srpm_dir = self.buildroot.rootdir + os.path.join(self.buildroot.builddir, "SRPMS")
 
         def get_files(packages):
             if len(packages) == 0:
@@ -84,8 +83,8 @@ class Unbreq(object):
 
         br_providers = dict()
         rev_br_providers = dict()
-        for srpm in srpm_dir.iterdir():
-            for br in get_buildrequires(str(srpm)):
+        for srpm in os.scandir(srpm_dir):
+            for br in get_buildrequires(srpm.path):
                 process = subprocess.run(
                     chroot_pkg_manager_command + ["repoquery", "--installed", "--whatprovides", br],
                     stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
