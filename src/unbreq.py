@@ -116,7 +116,7 @@ class Unbreq(object):
 
         brs_can_be_removed = list()
         for br, providers in br_providers.items():
-            process = subprocess.run(chroot_pkg_manager_command + ["--assumeno", "remove"] + [v for vs in brs_can_be_removed for v in vs[1]] + providers,
+            process = subprocess.run(chroot_pkg_manager_command + ["--assumeno", "--setopt", "protected_packages=", "remove"] + [v for vs in brs_can_be_removed for v in vs[1]] + providers,
                 stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
             )
             if process.returncode != 1:
