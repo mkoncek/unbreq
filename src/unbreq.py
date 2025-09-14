@@ -65,6 +65,15 @@ class Unbreq(object):
         plugins.add_hook("postbuild", self._PostBuildHook)
 
     @traceLog()
+    def do_with_chroot(self, function):
+        if self.USE_NSPAWN:
+            function()
+        else:
+            with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
+                self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
+                function()
+
+    @traceLog()
     def get_files(self, packages):
         if len(packages) == 0:
             return list()
@@ -77,6 +86,25 @@ class Unbreq(object):
             ))
         else:
             return process.stdout.splitlines()
+    
+    @traceLog()
+    def try_remove(self, packages):
+        process = subprocess.run(self.chroot_dnf_command + ["--setopt", "protected_packages=", "--assumeno", "remove"] + packages,
+            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True,
+        )
+        if process.returncode != 1:
+            raise RuntimeError("process {} returned {}: {}".format(
+                process.args, process.returncode, process.stderr.rstrip()
+            ))
+        result = []
+        for line in process.stdout.splitlines():
+            if not line.startswith(" "):
+                continue
+            nvr = line.split()
+            if len(nvr) != 6:
+                continue
+            result.append(nvr[0] + "-" + nvr[2] + "." + nvr[1])
+        return result
     
     @traceLog()
     def resolve_buildrequires(self):
@@ -114,22 +142,7 @@ class Unbreq(object):
 
         brs_can_be_removed = list()
         for br, providers in br_providers.items():
-            process = subprocess.run(self.chroot_dnf_command + ["--assumeno", "--setopt", "protected_packages=", "remove"] + [v for vs in brs_can_be_removed for v in vs[1]] + providers,
-                stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True
-            )
-            if process.returncode != 1:
-                raise RuntimeError("process {} returned {}: {}".format(
-                    process.args, process.returncode, process.stderr.rstrip()
-                ))
-            removed_packages = list()
-            for line in process.stdout.splitlines():
-                if not line.startswith(" "):
-                    continue
-                nvr = line.split()
-                if len(nvr) != 6:
-                    continue
-                nvr = nvr[0] + "-" + nvr[2] + "." + nvr[1]
-                removed_packages.append(nvr)
+            removed_packages = self.try_remove([v for vs in brs_can_be_removed for v in vs[1]] + providers)
             can_be_removed = True
             for path in self.get_files(removed_packages):
                 path = self.buildroot.rootdir + path
@@ -156,23 +169,7 @@ class Unbreq(object):
 
     @traceLog()
     def set_am_time(self):
-        process = subprocess.run(self.chroot_dnf_command + ["--assumeno", "--setopt", "protected_packages=", "remove"] + self.buildrequires,
-            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True,
-        )
-        if process.returncode != 1:
-            raise RuntimeError("process {} returned {}: {}".format(
-                process.args, process.returncode, process.stderr.rstrip()
-            ))
-        nvrs = []
-        for line in process.stdout.splitlines():
-            if not line.startswith(" "):
-                continue
-            nvr = line.split()
-            if len(nvr) != 6:
-                continue
-            nvrs.append(nvr[0] + "-" + nvr[2] + "." + nvr[1])
-        
-        for filename in set(self.get_files(nvrs)):
+        for filename in set(self.get_files(self.try_remove(self.buildrequires))):
             try:
                 os.utime(self.buildroot.rootdir + filename, (0, 0))
             except FileNotFoundError:
@@ -209,12 +206,7 @@ class Unbreq(object):
         
         if "relatime" in self.mount_options:
             getLog().info("unbreq plugin: detected 'relatime' mount option, going to set access times of files under %s to 0", self.buildroot.rootdir)
-            if self.USE_NSPAWN:
-                self.set_am_time()
-            else:
-                with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
-                    self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
-                    self.set_am_time()
+            self.do_with_chroot(self.set_am_time)
 
     @traceLog()
     def _PostBuildHook(self):
@@ -225,9 +217,4 @@ class Unbreq(object):
         if "noatime" in self.mount_options:
             getLog().warning("unbreq plugin: chroot %s is on a filesystem mounted with the 'noatime' option; detection will not work correctly, you may want to remount the proper directory with mount options 'strictatime,lazytime'", self.buildroot.rootdir)
 
-        if self.USE_NSPAWN:
-            self.resolve_buildrequires()
-        else:
-            with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
-                self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
-                self.resolve_buildrequires()
+        self.do_with_chroot(self.resolve_buildrequires)
