@@ -56,6 +56,9 @@ class Unbreq(object):
         self.accessed_files = AtimeDict()
         self.mount_options = None
 
+        # TODO handle different package managers
+        # self.buildroot.pkg_manager.name
+
         plugins.add_hook("prebuild", self._PreBuildHook)
         plugins.add_hook("postbuild", self._PostBuildHook)
 
@@ -65,7 +68,7 @@ class Unbreq(object):
             chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--pipe", "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir]
         else:
             chroot_command = ["/usr/bin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
-        chroot_pkg_manager_command = chroot_command + ["/usr/bin/" + self.buildroot.pkg_manager.name, "--installroot", self.buildroot.rootdir]
+        chroot_dnf_command = chroot_command + ["/usr/bin/dnf", "--installroot", self.buildroot.rootdir]
         srpm_dir = self.buildroot.rootdir + os.path.join(self.buildroot.builddir, "SRPMS")
 
         def get_files(packages):
@@ -86,7 +89,7 @@ class Unbreq(object):
         for srpm in os.scandir(srpm_dir):
             for br in get_buildrequires(srpm.path):
                 process = subprocess.run(
-                    chroot_pkg_manager_command + ["repoquery", "--installed", "--whatprovides", br],
+                    chroot_dnf_command + ["repoquery", "--installed", "--whatprovides", br],
                     stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
                 )
                 if process.returncode != 0:
@@ -116,7 +119,7 @@ class Unbreq(object):
 
         brs_can_be_removed = list()
         for br, providers in br_providers.items():
-            process = subprocess.run(chroot_pkg_manager_command + ["--assumeno", "--setopt", "protected_packages=", "remove"] + [v for vs in brs_can_be_removed for v in vs[1]] + providers,
+            process = subprocess.run(chroot_dnf_command + ["--assumeno", "--setopt", "protected_packages=", "remove"] + [v for vs in brs_can_be_removed for v in vs[1]] + providers,
                 stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
             )
             if process.returncode != 1:
