@@ -1,5 +1,7 @@
 #!/usr/bin/python3
 #
+# Generated-by: Claude Code and Google Gemini
+#
 # bcc_file_monitor.py
 #
 # This script monitors file access syscalls (openat, execve) for a specific
