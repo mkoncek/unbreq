@@ -7,6 +7,7 @@ Release:        %autorelease
 Summary:        Mock plugin - detector of unused BuildRequires
 License:        Apache-2.0
 URL:            https://github.com/mkoncek/unbreq
+BuildArch:      noarch
 
 Source0:        https://github.com/mkoncek/unbreq/archive/%{git_ref}.tar.gz#/%{name}-%{version}.tar.gz
 
