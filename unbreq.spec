@@ -19,9 +19,6 @@ BuildRequires:  python3-rpm-macros
 %prep
 %autosetup -p1 -C
 
-%build
-%{make_build}
-
 %install
 install -m 755 -D -t %{buildroot}%{python3_sitelib}/mockbuild/plugins src/unbreq.py
 
