@@ -1,4 +1,4 @@
-%global git_ref 63926aa04372d9fe196c93c865fb2cda76fd6ef8
+%global git_ref 9b623e67af91d95023d63070e33384286b660292
 %global git_short_ref %(echo %{git_ref} | cut -b -7)
 
 Name:           unbreq
