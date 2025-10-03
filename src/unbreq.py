@@ -3,16 +3,13 @@
 import subprocess
 import os
 import re
-from typing import (
-    Dict,
-    List,
-)
 
 # our imports
 from mockbuild.trace_decorator import getLog, traceLog
 import mockbuild.util
 from mockbuild.util import USE_NSPAWN
 import mockbuild.mounts
+import mockbuild.file_util
 
 requires_api_version = "1.1"
 
@@ -31,7 +28,15 @@ class AtimeDict(dict):
 def init(plugins, conf, buildroot):
     Unbreq(plugins, conf, buildroot)
 
-class Unbreq(object):
+class Unbreq():
+    """
+    Mock plugin that detects unused BuildRequires in RPM builds.
+
+    Works by tracking file access times during the build process to determine
+    which BuildRequire packages had their files accessed. Reports any
+    BuildRequires whose files were not accessed as potentially unnecessary.
+    """
+
     @traceLog()
     def __init__(self, plugins, conf, buildroot):
         self.buildroot = buildroot
@@ -39,9 +44,12 @@ class Unbreq(object):
         self.config = buildroot.config
 
         self.min_time = None
-        self.exclude_accessed_files = [re.compile(r) for r in
-            self.config.get("plugin_conf", {}).get("unbreq_opts", {}).get("exclude_accessed_files", [])
-        ]
+        config_exclude_accessed_files = self.config.get("plugin_conf", {}).get("unbreq_opts", {}).get("exclude_accessed_files", [])
+        if not isinstance(config_exclude_accessed_files, list):
+            raise mockbuild.exception.ConfigError("unbreq plugin: expected configuration field "
+                f"`exclude_accessed_files` to be a list, but was {type(config_exclude_accessed_files)}"
+            )
+        self.exclude_accessed_files = [re.compile(r) for r in config_exclude_accessed_files]
         self.accessed_files = AtimeDict()
         self.mount_options = None
         self.buildrequires_providers = None
@@ -62,18 +70,15 @@ class Unbreq(object):
                 return function()
 
     @traceLog()
-    def get_buildrequires(self, srpm: str) -> List[str]:
+    def get_buildrequires(self, srpm: str) -> list[str]:
         """
         Get the BuildRequires fields of a SRPM file.
         """
         process = subprocess.run(self.chroot_command + ["/usr/bin/rpm", "--root", self.buildroot.rootdir, "-q",
             "--qf", "[%{REQUIREFLAGS:deptype} %{REQUIRES} %{REQUIREFLAGS:depflags} %{REQUIREVERSION}\\n]", srpm],
-            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True
+            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+            text = True, check = True,
         )
-        if process.returncode != 0:
-            raise RuntimeError("process {} returned {}: {}".format(
-                process.args, process.returncode, process.stderr.rstrip()
-            ))
         result = []
         for line in process.stdout.splitlines():
             if line.startswith("manual "):
@@ -81,7 +86,7 @@ class Unbreq(object):
         return result
 
     @traceLog()
-    def get_files(self, packages: List[str]) -> List[str]:
+    def get_files(self, packages: list[str]) -> list[str]:
         """
         Get the files owned by `packages` using an RPM query.
         """
@@ -89,28 +94,26 @@ class Unbreq(object):
             return []
         process = subprocess.run(self.chroot_command +
             ["/usr/bin/rpm", "--root", self.buildroot.rootdir, "-q", "--qf", "[%{FILENAMES}\\n]"] + packages,
-            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True,
+            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+            text = True, check = True,
         )
-        if process.returncode != 0:
-            raise RuntimeError("process {} returned {}: {}".format(
-                process.args, process.returncode, process.stderr.rstrip()
-            ))
         result = process.stdout.splitlines()
         return result
 
     @traceLog()
-    def try_remove(self, packages: List[str]) -> List[str]:
+    def try_remove(self, packages: list[str]) -> list[str]:
         """
         Try to remove `packages` and obtain all the packages (NVRs) that would be removed.
         """
+
+        # Note that we expect this command to return 1
         process = subprocess.run(self.chroot_dnf_command +
             ["--setopt", "protected_packages=", "--assumeno", "remove"] + packages,
-            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True,
+            stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+            text = True, check = False,
         )
         if process.returncode != 1:
-            raise RuntimeError("process {} returned {}: {}".format(
-                process.args, process.returncode, process.stderr.rstrip()
-            ))
+            raise subprocess.CalledProcessError(process.returncode, process, process.stdout, process.stderr)
         result = []
         for line in process.stdout.splitlines():
             if not line.startswith(" "):
@@ -118,11 +121,11 @@ class Unbreq(object):
             nvr = line.split()
             if len(nvr) != 6:
                 continue
-            result.append("{}-{}.{}".format(nvr[0], nvr[2], nvr[1]))
+            result.append(f"{nvr[0]}-{nvr[2]}.{nvr[1]}")
         return result
 
     @traceLog()
-    def get_buildrequires_providers(self, buildrequires: List[str]) -> Dict[str, List[str]]:
+    def get_buildrequires_providers(self, buildrequires: list[str]) -> dict[str, list[str]]:
         """
         Get the mapping of BuildRequires fields to the RPMs that provide it.
         Each BR can be provided by multiple installed RPMs but we try to
@@ -131,18 +134,15 @@ class Unbreq(object):
 
         # Get both the mapping and the reverse mapping between each BuildRequire
         # and the RPMs that provide it.
-        br_providers: Dict[str, List[str]] = dict()
-        provided_brs: Dict[str, List[str]] = dict()
+        br_providers: dict[str, list[str]] = {}
+        provided_brs: dict[str, list[str]] = {}
         for br in buildrequires:
             process = subprocess.run(
                 self.chroot_dnf_command + ["repoquery", "--installed", "--whatprovides", br],
-                stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True
+                stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+                text = True, check = True,
             )
-            if process.returncode != 0:
-                raise RuntimeError("process {} returned {}: {}".format(
-                    process.args, process.returncode, process.stderr.strip()
-                ))
-            current_br_providers: List[str] = process.stdout.splitlines()
+            current_br_providers: list[str] = process.stdout.splitlines()
             br_providers[br] = current_br_providers
             for provider in current_br_providers:
                 provided_brs.setdefault(provider, []).append(br)
@@ -186,10 +186,8 @@ class Unbreq(object):
                     continue
                 if atime > self.min_time:
                     short_path = path[len(self.buildroot.rootdir):]
-                    skip = False
                     for r in self.exclude_accessed_files:
                         if r.search(short_path) is not None:
-                            skip = True
                             break
                     else:
                         getLog().info(
@@ -240,17 +238,23 @@ class Unbreq(object):
         self.buildrequires_providers = self.get_buildrequires_providers(sorted(buildrequires))
 
         # NOTE maybe find a better example file to touch to get an atime?
-        path = os.path.join(self.buildroot.rootdir, "dev", "null")
-        subprocess.run(["touch", path], check = True)
-        self.min_time = os.stat(path).st_atime
+        path = self.buildroot.make_chroot_path("dev", "null")
+        mockbuild.file_util.touch(path)
+        self.min_time = os.path.getatime(path)
 
         try:
+            # NOTE should failure throw an exception?
             mount_options_process = subprocess.run(
-                ["findmnt", "-n", "-o", "OPTIONS", "--target", self.buildroot.rootdir],
-                stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True,
+                ["/usr/bin/findmnt", "-n", "-o", "OPTIONS", "--target", self.buildroot.rootdir],
+                stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
+                text = True, check = False,
             )
             if mount_options_process:
                 self.mount_options = mount_options_process.stdout.rstrip().split(",")
+            else:
+                getLog().warning("unbreq plugin: unable to detect buildroot mount options, process %s returned %d: %s",
+                    mount_options_process, mount_options_process.returncode, mount_options_process.stderr,
+                )
         except FileNotFoundError:
             pass
 
