@@ -62,12 +62,12 @@ class Unbreq():
 
     @traceLog()
     def do_with_chroot(self, function):
-        if USE_NSPAWN:
-            return function()
-        else:
+        if not USE_NSPAWN and self.config["use_bootstrap"]:
             with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
                 self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
                 return function()
+        else:
+            return function()
 
     @traceLog()
     def get_buildrequires(self, srpm: str) -> list[str]:
@@ -222,12 +222,14 @@ class Unbreq():
     def _PreBuildHook(self):
         getLog().info("enabled unbreq plugin (prebuild)")
 
-        if USE_NSPAWN:
-            self.chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--pipe",
-                "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir
-            ]
-        else:
-            self.chroot_command = ["/usr/bin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
+        self.chroot_command = []
+        if self.config["use_bootstrap"]:
+            if USE_NSPAWN:
+                self.chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--pipe",
+                    "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir
+                ]
+            else:
+                self.chroot_command = ["/usr/bin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
         self.chroot_dnf_command = self.chroot_command + ["/usr/bin/dnf", "--installroot", self.buildroot.rootdir]
         self.srpm_dir = self.buildroot.make_chroot_path(self.buildroot.builddir, "SRPMS")
 
