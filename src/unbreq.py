@@ -262,7 +262,7 @@ class Unbreq():
 
         if "relatime" in self.mount_options:
             getLog().info(
-                "unbreq plugin: detected 'relatime' mount option, going to set access times of files under %s to 0",
+                "unbreq plugin: detected 'relatime' mount option, setting access times of files under %s to 0",
                 self.buildroot.rootdir
             )
             self.do_with_chroot(self.set_br_files_am_time)
