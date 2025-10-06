@@ -3,6 +3,7 @@
 import subprocess
 import os
 import re
+from contextlib import contextmanager
 
 # our imports
 from mockbuild.trace_decorator import getLog, traceLog
@@ -61,13 +62,14 @@ class Unbreq():
         plugins.add_hook("postbuild", self._PostBuildHook)
 
     @traceLog()
-    def do_with_chroot(self, function):
-        if not USE_NSPAWN and self.config["use_bootstrap"]:
-            with mockbuild.mounts.BindMountPoint(self.buildroot.rootdir,
-                self.buildroot.bootstrap_buildroot.make_chroot_path(self.buildroot.rootdir)).having_mounted():
-                return function()
+    @contextmanager
+    def do_with_chroot(self):
+        if not USE_NSPAWN and self.buildroot.bootstrap_buildroot is not None:
+            with self.buildroot.shadow_utils.root.uid_manager.elevated_privileges():
+                with self.buildroot.mounts.buildroot_in_bootstrap_mounted():
+                    yield
         else:
-            return function()
+            yield
 
     @traceLog()
     def get_buildrequires(self, srpm: str) -> list[str]:
@@ -223,21 +225,22 @@ class Unbreq():
         getLog().info("enabled unbreq plugin (prebuild)")
 
         self.chroot_command = []
-        if self.config["use_bootstrap"]:
+        if self.buildroot.bootstrap_buildroot is not None:
             if USE_NSPAWN:
                 self.chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--pipe",
                     "-D", self.buildroot.bootstrap_buildroot.rootdir, "--bind", self.buildroot.rootdir
                 ]
             else:
-                self.chroot_command = ["/usr/bin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
+                self.chroot_command = ["/usr/sbin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
         self.chroot_dnf_command = self.chroot_command + ["/usr/bin/dnf", "--installroot", self.buildroot.rootdir]
         self.srpm_dir = self.buildroot.make_chroot_path(self.buildroot.builddir, "SRPMS")
 
         buildrequires = set()
-        for srpm in os.scandir(self.srpm_dir):
-            for br in self.do_with_chroot(lambda: self.get_buildrequires(srpm.path)):
-                buildrequires.add(br)
-        self.buildrequires_providers = self.get_buildrequires_providers(sorted(buildrequires))
+        with self.do_with_chroot():
+            for srpm in os.scandir(self.srpm_dir):
+                for br in self.get_buildrequires(srpm.path):
+                    buildrequires.add(br)
+            self.buildrequires_providers = self.get_buildrequires_providers(sorted(buildrequires))
 
         # NOTE maybe find a better example file to touch to get an atime?
         path = self.buildroot.make_chroot_path("dev", "null")
@@ -265,7 +268,8 @@ class Unbreq():
                 "unbreq plugin: detected 'relatime' mount option, setting access times of files under %s to 0",
                 self.buildroot.rootdir
             )
-            self.do_with_chroot(self.set_br_files_am_time)
+            with self.do_with_chroot():
+                self.set_br_files_am_time()
 
     @traceLog()
     def _PostBuildHook(self):
@@ -280,5 +284,5 @@ class Unbreq():
                 "you may want to remount the proper directory with mount options 'strictatime,lazytime'",
                 self.buildroot.rootdir
             )
-
-        self.do_with_chroot(self.resolve_buildrequires)
+        with self.do_with_chroot():
+            self.resolve_buildrequires()
