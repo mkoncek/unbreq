@@ -1,8 +1,17 @@
 #!/usr/bin/python3
+
+"""
+A plugin which detects unused BuildRequires based on file accesses during the
+RPM build.
+
+Author: Marián Konček <mkoncek@redhat.com>
+"""
+
 # python library imports
 import subprocess
 import os
 import re
+from typing import Generator
 from contextlib import contextmanager
 
 # our imports
@@ -19,17 +28,19 @@ class AtimeDict(dict):
     A caching lazy dictionary mapping file paths to their access time.
     """
 
-    def __missing__(self, key):
+    def __missing__(self, key: str) -> float:
         result = os.stat(key).st_atime
         self[key] = result
         return result
 
-# plugin entry point
 @traceLog()
-def init(plugins, conf, buildroot):
+def init(plugins, conf, buildroot) -> None:
+    """
+    Plugin entry point.
+    """
     Unbreq(plugins, conf, buildroot)
 
-class Unbreq():
+class Unbreq:
     """
     Mock plugin that detects unused BuildRequires in RPM builds.
 
@@ -38,32 +49,48 @@ class Unbreq():
     BuildRequires whose files were not accessed as potentially unnecessary.
     """
 
+    # pylint: disable=too-many-instance-attributes
     @traceLog()
-    def __init__(self, plugins, conf, buildroot):
+    def __init__(self, plugins, conf, buildroot) -> None:
         self.buildroot = buildroot
         self.showrc_opts = conf
         self.config = buildroot.config
 
-        self.min_time = None
-        config_exclude_accessed_files = self.config.get("plugin_conf", {}).get("unbreq_opts", {}).get("exclude_accessed_files", [])
+        self.chroot_command: list[str] = []
+        self.chroot_dnf_command: list[str] = []
+        self.min_time: float = 0.0
+        config_exclude_accessed_files = (
+            self.config
+            .get("plugin_conf", {})
+            .get("unbreq_opts", {})
+            .get("exclude_accessed_files", [])
+        )
         if not isinstance(config_exclude_accessed_files, list):
             raise mockbuild.exception.ConfigError("unbreq plugin: expected configuration field "
                 f"`exclude_accessed_files` to be a list, but was {type(config_exclude_accessed_files)}"
             )
         self.exclude_accessed_files = [re.compile(r) for r in config_exclude_accessed_files]
         self.accessed_files = AtimeDict()
-        self.mount_options = None
-        self.buildrequires_providers = None
+        self.mount_options: list[str] = []
+        self.buildrequires_providers: dict[str, list[str]] = {}
+        self.buildrequires_deptype: dict[str, str] = {}
 
         # TODO handle different package managers
         # self.buildroot.pkg_manager.name
 
-        plugins.add_hook("prebuild", self._PreBuildHook)
+        plugins.add_hook("earlyprebuild", self._EarlyPrebuildHook)
+        plugins.add_hook("postyum", self._PostYumHook)
+        plugins.add_hook("postdeps", self._PostDepsHook)
         plugins.add_hook("postbuild", self._PostBuildHook)
 
     @traceLog()
     @contextmanager
-    def do_with_chroot(self):
+    def do_with_chroot(self) -> Generator:
+        """
+        Provide context for execution with having the mock chroot mounted in
+        the bootstrap chroot, if available.
+        """
+        # NOTE this should really be handled automatically by `buildroot_in_bootstrap_mounted`.
         if not USE_NSPAWN and self.buildroot.bootstrap_buildroot is not None:
             with self.buildroot.shadow_utils.root.uid_manager.elevated_privileges():
                 with self.buildroot.mounts.buildroot_in_bootstrap_mounted():
@@ -72,20 +99,32 @@ class Unbreq():
             yield
 
     @traceLog()
-    def get_buildrequires(self, srpm: str) -> list[str]:
+    def get_buildrequires(self, srpm: str) -> None:
         """
-        Get the BuildRequires fields of a SRPM file.
+        Get the BuildRequires fields of a SRPM file and store them in `self.buildrequires_deptype`
+        mapped to their dependency type.
+        We recognize the following dependency types:
+          * rpmlib - disregard these, we cannot use them in dnf queries
+          * manual - explicitly written in the .spec file
+          * auto - result of dynamic BuildRequires generation
+        Dependency type strings can have more attributes separated by a comma.
+        We ignore those.
         """
         process = subprocess.run(self.chroot_command + ["/usr/bin/rpm", "--root", self.buildroot.rootdir, "-q",
             "--qf", "[%{REQUIREFLAGS:deptype} %{REQUIRES} %{REQUIREFLAGS:depflags} %{REQUIREVERSION}\\n]", srpm],
             stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
             text = True, check = True,
         )
-        result = []
         for line in process.stdout.splitlines():
-            if line.startswith("manual "):
-                result.append(line[7:].rstrip())
-        return result
+            separator = line.find(" ")
+            deptype_end = line.find(",", 0, separator)
+            if deptype_end == -1:
+                deptype_end = separator
+            deptype = line[:deptype_end]
+            buildrequire = line[separator + 1:].rstrip()
+            if deptype == "rpmlib":
+                continue
+            self.buildrequires_deptype[buildrequire] = deptype
 
     @traceLog()
     def get_files(self, packages: list[str]) -> list[str]:
@@ -115,7 +154,9 @@ class Unbreq():
             text = True, check = False,
         )
         if process.returncode != 1:
-            raise subprocess.CalledProcessError(process.returncode, process, process.stdout, process.stderr)
+            raise subprocess.CalledProcessError(
+                process.returncode, " ".join(process.args), process.stdout, process.stderr
+            )
         result = []
         for line in process.stdout.splitlines():
             if not line.startswith(" "):
@@ -156,6 +197,8 @@ class Unbreq():
         # So sort the BR mapping by the number of providers from the shortest
         # one and if the same RPM provider is found providing a different BR,
         # remove it from the other list.
+
+        # pylint: disable=too-many-nested-blocks,invalid-name
         sorted_br_providers = sorted(br_providers, key = lambda k: len(br_providers[k]))
         if len(sorted_br_providers) != 0 and len(sorted_br_providers[-1]) > 1:
             for br in sorted_br_providers:
@@ -172,11 +215,11 @@ class Unbreq():
         return br_providers
 
     @traceLog()
-    def resolve_buildrequires(self):
+    def resolve_buildrequires(self) -> None:
         """
         Decide which BuildRequire fields were not used based on file accesses.
         """
-        brs_can_be_removed = []
+        brs_can_be_removed: list[tuple[str, list[str]]] = []
         for br, providers in self.buildrequires_providers.items():
             removed_packages = self.try_remove([v for vs in brs_can_be_removed for v in vs[1]] + providers)
             can_be_removed = True
@@ -205,7 +248,7 @@ class Unbreq():
             getLog().warning("unbreq plugin: the following BuildRequires were not used:\n\t%s", "\n\t".join(brs))
 
     @traceLog()
-    def set_br_files_am_time(self):
+    def set_br_files_am_time(self) -> None:
         """
         Get all the BuildRequires, the RPMs that provide them, the files they
         own and set both their access and modify timestamps to zero.
@@ -221,10 +264,12 @@ class Unbreq():
                 pass
 
     @traceLog()
-    def _PreBuildHook(self):
-        getLog().info("enabled unbreq plugin (prebuild)")
+    def _EarlyPrebuildHook(self) -> None:
+        """
+        Initialize some chroot attributes.
+        """
+        getLog().info("enabled unbreq plugin (earlyprebuild)")
 
-        self.chroot_command = []
         if self.buildroot.bootstrap_buildroot is not None:
             if USE_NSPAWN:
                 self.chroot_command = ["/usr/bin/systemd-nspawn", "--quiet", "--pipe",
@@ -233,14 +278,30 @@ class Unbreq():
             else:
                 self.chroot_command = ["/usr/sbin/chroot", self.buildroot.bootstrap_buildroot.rootdir]
         self.chroot_dnf_command = self.chroot_command + ["/usr/bin/dnf", "--installroot", self.buildroot.rootdir]
-        self.srpm_dir = self.buildroot.make_chroot_path(self.buildroot.builddir, "SRPMS")
 
-        buildrequires = set()
+    @traceLog()
+    def _PostYumHook(self) -> None:
+        """
+        This is called multiple times, but only this hook catches the potential
+        temporary SRPM containing dynamically generated BuildRequires.
+        We simply collect them every time this hook is invoked.
+        """
+        getLog().info("enabled unbreq plugin (postyum)")
+
+        srpm_dir = self.buildroot.make_chroot_path(self.buildroot.builddir, "SRPMS")
         with self.do_with_chroot():
-            for srpm in os.scandir(self.srpm_dir):
-                for br in self.get_buildrequires(srpm.path):
-                    buildrequires.add(br)
-            self.buildrequires_providers = self.get_buildrequires_providers(sorted(buildrequires))
+            for srpm in os.scandir(srpm_dir):
+                self.get_buildrequires(srpm.path)
+
+    @traceLog()
+    def _PostDepsHook(self) -> None:
+        """
+        At this point even dynamic BuildRequires have been generated.
+        """
+        getLog().info("enabled unbreq plugin (postdeps)")
+
+        with self.do_with_chroot():
+            self.buildrequires_providers = self.get_buildrequires_providers(sorted(self.buildrequires_deptype.keys()))
 
         # NOTE maybe find a better example file to touch to get an atime?
         path = self.buildroot.make_chroot_path("dev", "null")
@@ -272,9 +333,13 @@ class Unbreq():
                 self.set_br_files_am_time()
 
     @traceLog()
-    def _PostBuildHook(self):
+    def _PostBuildHook(self) -> None:
+        """
+        Resolve accessed files to BuildRequires.
+        """
         if self.buildroot.state.result != "success":
             return
+
         getLog().info("enabled unbreq plugin (postbuild)")
 
         if "noatime" in self.mount_options:
