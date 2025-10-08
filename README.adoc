@@ -2,6 +2,13 @@
 
 Detector of unused `BuildRequires` of RPM builds.
 
+[IMPORTANT]
+====
+This project has been merged into the upstream https://github.com/rpm-software-management/mock[mock] project.
+Further development will happen there.
+====
+
+
 == Usage
 [NOTE]
 ====
