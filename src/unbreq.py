@@ -73,6 +73,7 @@ class Unbreq:
         self.exclude_accessed_files = [re.compile(r) for r in config_exclude_accessed_files]
         self.accessed_files = AtimeDict()
         self.mount_options: list[str] = []
+        self.srpm_buildrequires: dict[str, list[str]] = {}
         self.buildrequires_providers: dict[str, list[str]] = {}
         self.buildrequires_deptype: dict[str, str] = {}
 
@@ -111,11 +112,16 @@ class Unbreq:
         Dependency type strings can have more attributes separated by a comma.
         We ignore those.
         """
+        srpm_basename = os.path.basename(srpm)
+        if srpm_basename in self.srpm_buildrequires:
+            return
+
         process = subprocess.run(self.chroot_command + ["/usr/bin/rpm", "--root", self.buildroot.rootdir, "-q",
             "--qf", "[%{REQUIREFLAGS:deptype} %{REQUIRES} %{REQUIREFLAGS:depflags} %{REQUIREVERSION}\\n]", srpm],
             stdin = subprocess.DEVNULL, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
             text = True, check = True,
         )
+        buildrequires: list[str] = []
         for line in process.stdout.splitlines():
             separator = line.find(" ")
             deptype_end = line.find(",", 0, separator)
@@ -125,7 +131,9 @@ class Unbreq:
             buildrequire = line[separator + 1:].rstrip()
             if deptype == "rpmlib":
                 continue
+            buildrequires.append(buildrequire)
             self.buildrequires_deptype[buildrequire] = deptype
+        self.srpm_buildrequires[srpm_basename] = buildrequires
 
     @traceLog()
     def get_files(self, packages: list[str]) -> list[str]:
