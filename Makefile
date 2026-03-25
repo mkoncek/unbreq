@@ -23,7 +23,7 @@ clean:
 %/:
 	@mkdir -p $@
 
-target/libunbreq.so: src/preload.c Makefile src/shared.hpp | target/
+target/libunbreq_preload.so: src/preload.c Makefile src/shared.hpp | target/
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -shared -fpic -o $@
 
 target/resolve: src/resolve.cpp Makefile src/shared.hpp | target/
