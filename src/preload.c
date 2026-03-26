@@ -15,7 +15,10 @@
 #include <unistd.h>
 #include <linux/limits.h>
 
-static const char* const static_output_path = "/var/mock/unbreq";
+// #define TRACE fprintf(stderr, "[DEBUG] %s\n", __func__)
+#define TRACE ;
+
+static const char* static_output_path = NULL;
 static FILE* static_output = NULL;
 static __thread char static_curdir[PATH_MAX] = {};
 static __thread char static_link[32] = {};
@@ -53,10 +56,12 @@ static void constructor(void)
 	cexeclp = dlsym(RTLD_NEXT, "execlp");
 	cexecvpe = dlsym(RTLD_NEXT, "execvpe");
 	
+	static_output_path = getenv("UNBREQ_OUTPUT_PATH");
 	static_output = fopen(static_output_path, "a");
 	if (static_output == NULL)
 	{
-		fprintf(stderr, "[ERROR] File %s could not be opened", static_output_path);
+		fprintf(stderr, "[ERROR] File %s could not be opened\n", static_output_path);
+		exit(127);
 	}
 }
 
@@ -68,7 +73,7 @@ static void destructor(void)
 
 static void record_path(const char* path)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	if (path[0] != '/')
 	{
 		getcwd(static_curdir, sizeof(static_curdir));
@@ -82,7 +87,7 @@ static void record_path(const char* path)
 
 static void record_fd(int fd)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	snprintf(static_link, sizeof(static_link), "/proc/self/fd/%d", fd);
 	ssize_t len = readlink(static_link, static_resolved, sizeof(static_resolved) - 1);
 	if (len > 0)
@@ -94,7 +99,7 @@ static void record_fd(int fd)
 
 static void record_openat_path(int fd, const char* file)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	if (file[0] == '/')
 	{
 		fprintf(static_output, "%s\n", file);
@@ -118,7 +123,7 @@ static void record_openat_path(int fd, const char* file)
 
 static void record_path_search(const char* file)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	if (strchr(file, '/') != NULL)
 	{
 		record_path(file);
@@ -150,7 +155,7 @@ static void record_path_search(const char* file)
 
 int open(const char* file, int oflag, ...)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -160,15 +165,12 @@ int open(const char* file, int oflag, ...)
 		va_end(args);
 	}
 	record_path(file);
-	fprintf(stderr, "[DEBUG] ???\n");
-	int result = copen(file, oflag, mode);
-	fprintf(stderr, "[DEBUG] %d\n", result);
-	return result;
+	return copen(file, oflag, mode);
 }
 
 int open64(const char* file, int oflag, ...)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -183,7 +185,7 @@ int open64(const char* file, int oflag, ...)
 
 int openat(int fd, const char* file, int oflag, ...)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -198,7 +200,7 @@ int openat(int fd, const char* file, int oflag, ...)
 
 int openat64(int fd, const char* file, int oflag, ...)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -213,28 +215,31 @@ int openat64(int fd, const char* file, int oflag, ...)
 
 int execve(const char* path, char* const argv[], char* const envp[])
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	record_path(path);
+	fflush(static_output);
 	return cexecve(path, argv, envp);
 }
 
 int fexecve(int fd, char* const argv[], char* const envp[])
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	record_fd(fd);
+	fflush(static_output);
 	return cfexecve(fd, argv, envp);
 }
 
 int execv(const char* path, char* const argv[])
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	record_path(path);
+	fflush(static_output);
 	return cexecv(path, argv);
 }
 
 int execle(const char* path, const char* arg, ...)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	va_list ap;
 	va_start(ap, arg);
 	size_t argc = 1;
@@ -260,12 +265,13 @@ int execle(const char* path, const char* arg, ...)
 	va_end(ap);
 	
 	record_path(path);
+	fflush(static_output);
 	return cexecve(path, static_argv, envp);
 }
 
 int execl(const char* path, const char* arg, ...)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	va_list ap;
 	va_start(ap, arg);
 	size_t argc = 1;
@@ -290,19 +296,21 @@ int execl(const char* path, const char* arg, ...)
 	va_end(ap);
 	
 	record_path(path);
+	fflush(static_output);
 	return cexecv(path, static_argv);
 }
 
 int execvp(const char* file, char* const argv[])
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	record_path_search(file);
+	fflush(static_output);
 	return cexecvp(file, argv);
 }
 
 int execlp(const char* file, const char* arg, ...)
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	va_list ap;
 	va_start(ap, arg);
 	size_t argc = 1;
@@ -327,12 +335,14 @@ int execlp(const char* file, const char* arg, ...)
 	va_end(ap);
 	
 	record_path_search(file);
+	fflush(static_output);
 	return cexecvp(file, static_argv);
 }
 
 int execvpe(const char* file, char* const argv[], char* const envp[])
 {
-	fprintf(stderr, "[DEBUG] %s\n", __func__);
+	TRACE;
 	record_path_search(file);
+	fflush(static_output);
 	return cexecvpe(file, argv, envp);
 }
