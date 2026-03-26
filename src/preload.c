@@ -12,7 +12,6 @@
 #include <errno.h>
 #include <stdio.h>
 
-#include <unistd.h>
 #include <linux/limits.h>
 
 // #define TRACE fprintf(stderr, "[DEBUG] %s\n", __func__)
@@ -57,6 +56,11 @@ static void constructor(void)
 	cexecvpe = dlsym(RTLD_NEXT, "execvpe");
 	
 	static_output_path = getenv("UNBREQ_OUTPUT_PATH");
+	if (static_output_path == NULL)
+	{
+		fprintf(stderr, "[ERROR] UNBREQ_OUTPUT_PATH is not set\n");
+		exit(127);
+	}
 	static_output = fopen(static_output_path, "a");
 	if (static_output == NULL)
 	{
@@ -68,15 +72,25 @@ static void constructor(void)
 __attribute__((destructor))
 static void destructor(void)
 {
-	fclose(static_output);
+	if (static_output != NULL)
+	{
+		fclose(static_output);
+	}
 }
 
 static void record_path(const char* path)
 {
 	TRACE;
+	if (path == NULL)
+	{
+		return;
+	}
 	if (path[0] != '/')
 	{
-		getcwd(static_curdir, sizeof(static_curdir));
+		if (getcwd(static_curdir, sizeof(static_curdir)) == NULL)
+		{
+			return;
+		}
 		fprintf(static_output, "%s/%s\n", static_curdir, path);
 	}
 	else
@@ -100,13 +114,20 @@ static void record_fd(int fd)
 static void record_openat_path(int fd, const char* file)
 {
 	TRACE;
+	if (file == NULL)
+	{
+		return;
+	}
 	if (file[0] == '/')
 	{
 		fprintf(static_output, "%s\n", file);
 	}
 	else if (fd == AT_FDCWD)
 	{
-		getcwd(static_curdir, sizeof(static_curdir));
+		if (getcwd(static_curdir, sizeof(static_curdir)) == NULL)
+		{
+			return;
+		}
 		fprintf(static_output, "%s/%s\n", static_curdir, file);
 	}
 	else
@@ -124,6 +145,10 @@ static void record_openat_path(int fd, const char* file)
 static void record_path_search(const char* file)
 {
 	TRACE;
+	if (file == NULL)
+	{
+		return;
+	}
 	if (strchr(file, '/') != NULL)
 	{
 		record_path(file);
@@ -160,7 +185,7 @@ int open(const char* file, int oflag, ...)
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
 		va_list args;
-		va_start(args, 1);
+		va_start(args, oflag);
 		mode = va_arg(args, mode_t);
 		va_end(args);
 	}
@@ -175,7 +200,7 @@ int open64(const char* file, int oflag, ...)
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
 		va_list args;
-		va_start(args, 1);
+		va_start(args, oflag);
 		mode = va_arg(args, mode_t);
 		va_end(args);
 	}
