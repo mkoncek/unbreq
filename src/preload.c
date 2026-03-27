@@ -24,47 +24,50 @@ static __thread char static_link[32] = {};
 static __thread char static_resolved[PATH_MAX] = {};
 static __thread char* static_argv[4096] = {};
 
-static int (*copen)(const char* file, int oflag, ...) = NULL;
-static int (*copen64)(const char* file, int oflag, ...) = NULL;
-static int (*copenat)(int fd, const char* file, int oflag, ...) = NULL;
-static int (*copenat64)(int fd, const char* file, int oflag, ...) = NULL;
+#define DECLARE_FUNCTION_POINTER(name) static __typeof__(name)* name##_orig = NULL
+#define ASSIGN_FUNCTION_POINTER(name) name##_orig = (__typeof__(name##_orig))dlsym(RTLD_NEXT, #name)
 
-static int (*cexecve)(const char* path, char* const argv[], char* const envp[]) = NULL;
-static int (*cfexecve)(int fd, char* const argv[], char* const envp[]) = NULL;
-static int (*cexecv)(const char* path, char* const argv[]) = NULL;
-static int (*cexecle)(const char* path, const char* arg, ...) = NULL;
-static int (*cexecl)(const char* path, const char* arg, ...) = NULL;
-static int (*cexecvp)(const char* file, char* const argv[]) = NULL;
-static int (*cexeclp)(const char* file, const char* arg, ...) = NULL;
-static int (*cexecvpe)(const char* file, char* const argv[], char* const envp[]) = NULL;
+DECLARE_FUNCTION_POINTER(open);
+DECLARE_FUNCTION_POINTER(open64);
+DECLARE_FUNCTION_POINTER(openat);
+DECLARE_FUNCTION_POINTER(openat64);
+
+DECLARE_FUNCTION_POINTER(execve);
+DECLARE_FUNCTION_POINTER(fexecve);
+DECLARE_FUNCTION_POINTER(execv);
+DECLARE_FUNCTION_POINTER(execle);
+DECLARE_FUNCTION_POINTER(execl);
+DECLARE_FUNCTION_POINTER(execvp);
+DECLARE_FUNCTION_POINTER(execlp);
+DECLARE_FUNCTION_POINTER(execvpe);
 
 __attribute__((constructor))
 static void constructor(void)
 {
-	copen = dlsym(RTLD_NEXT, "open");
-	copen64 = dlsym(RTLD_NEXT, "open64");
-	copenat = dlsym(RTLD_NEXT, "openat");
-	copenat64 = dlsym(RTLD_NEXT, "openat64");
+	ASSIGN_FUNCTION_POINTER(open);
+	ASSIGN_FUNCTION_POINTER(open64);
+	ASSIGN_FUNCTION_POINTER(openat);
+	ASSIGN_FUNCTION_POINTER(openat64);
 	
-	cexecve = dlsym(RTLD_NEXT, "execve");
-	cfexecve = dlsym(RTLD_NEXT, "fexecve");
-	cexecv = dlsym(RTLD_NEXT, "execv");
-	cexecle = dlsym(RTLD_NEXT, "execle");
-	cexecl = dlsym(RTLD_NEXT, "execl");
-	cexecvp = dlsym(RTLD_NEXT, "execvp");
-	cexeclp = dlsym(RTLD_NEXT, "execlp");
-	cexecvpe = dlsym(RTLD_NEXT, "execvpe");
+	ASSIGN_FUNCTION_POINTER(execve);
+	ASSIGN_FUNCTION_POINTER(fexecve);
+	ASSIGN_FUNCTION_POINTER(execv);
+	ASSIGN_FUNCTION_POINTER(execle);
+	ASSIGN_FUNCTION_POINTER(execl);
+	ASSIGN_FUNCTION_POINTER(execvp);
+	ASSIGN_FUNCTION_POINTER(execlp);
+	ASSIGN_FUNCTION_POINTER(execvpe);
 	
 	static_output_path = getenv("UNBREQ_OUTPUT_PATH");
 	if (static_output_path == NULL)
 	{
-		fprintf(stderr, "[ERROR] UNBREQ_OUTPUT_PATH is not set\n");
+		fprintf(stderr, "[ERROR] unbreq plugin: UNBREQ_OUTPUT_PATH is not set\n");
 		exit(127);
 	}
 	static_output = fopen(static_output_path, "a");
 	if (static_output == NULL)
 	{
-		fprintf(stderr, "[ERROR] File %s could not be opened\n", static_output_path);
+		fprintf(stderr, "[ERROR] unbreq plugin: file %s could not be opened\n", static_output_path);
 		exit(127);
 	}
 }
@@ -190,7 +193,7 @@ int open(const char* file, int oflag, ...)
 		va_end(args);
 	}
 	record_path(file);
-	return copen(file, oflag, mode);
+	return open_orig(file, oflag, mode);
 }
 
 int open64(const char* file, int oflag, ...)
@@ -205,7 +208,7 @@ int open64(const char* file, int oflag, ...)
 		va_end(args);
 	}
 	record_path(file);
-	return copen64(file, oflag, mode);
+	return open64_orig(file, oflag, mode);
 }
 
 int openat(int fd, const char* file, int oflag, ...)
@@ -220,7 +223,7 @@ int openat(int fd, const char* file, int oflag, ...)
 		va_end(args);
 	}
 	record_openat_path(fd, file);
-	return copenat(fd, file, oflag, mode);
+	return openat_orig(fd, file, oflag, mode);
 }
 
 int openat64(int fd, const char* file, int oflag, ...)
@@ -235,7 +238,7 @@ int openat64(int fd, const char* file, int oflag, ...)
 		va_end(args);
 	}
 	record_openat_path(fd, file);
-	return copenat64(fd, file, oflag, mode);
+	return openat64_orig(fd, file, oflag, mode);
 }
 
 int execve(const char* path, char* const argv[], char* const envp[])
@@ -243,7 +246,7 @@ int execve(const char* path, char* const argv[], char* const envp[])
 	TRACE;
 	record_path(path);
 	fflush(static_output);
-	return cexecve(path, argv, envp);
+	return execve_orig(path, argv, envp);
 }
 
 int fexecve(int fd, char* const argv[], char* const envp[])
@@ -251,7 +254,7 @@ int fexecve(int fd, char* const argv[], char* const envp[])
 	TRACE;
 	record_fd(fd);
 	fflush(static_output);
-	return cfexecve(fd, argv, envp);
+	return fexecve_orig(fd, argv, envp);
 }
 
 int execv(const char* path, char* const argv[])
@@ -259,7 +262,7 @@ int execv(const char* path, char* const argv[])
 	TRACE;
 	record_path(path);
 	fflush(static_output);
-	return cexecv(path, argv);
+	return execv_orig(path, argv);
 }
 
 int execle(const char* path, const char* arg, ...)
@@ -291,7 +294,7 @@ int execle(const char* path, const char* arg, ...)
 	
 	record_path(path);
 	fflush(static_output);
-	return cexecve(path, static_argv, envp);
+	return execve_orig(path, static_argv, envp);
 }
 
 int execl(const char* path, const char* arg, ...)
@@ -322,7 +325,7 @@ int execl(const char* path, const char* arg, ...)
 	
 	record_path(path);
 	fflush(static_output);
-	return cexecv(path, static_argv);
+	return execv_orig(path, static_argv);
 }
 
 int execvp(const char* file, char* const argv[])
@@ -330,7 +333,7 @@ int execvp(const char* file, char* const argv[])
 	TRACE;
 	record_path_search(file);
 	fflush(static_output);
-	return cexecvp(file, argv);
+	return execvp_orig(file, argv);
 }
 
 int execlp(const char* file, const char* arg, ...)
@@ -361,7 +364,7 @@ int execlp(const char* file, const char* arg, ...)
 	
 	record_path_search(file);
 	fflush(static_output);
-	return cexecvp(file, static_argv);
+	return execvp_orig(file, static_argv);
 }
 
 int execvpe(const char* file, char* const argv[], char* const envp[])
@@ -369,5 +372,5 @@ int execvpe(const char* file, char* const argv[], char* const envp[])
 	TRACE;
 	record_path_search(file);
 	fflush(static_output);
-	return cexecvpe(file, argv, envp);
+	return execvpe_orig(file, argv, envp);
 }
