@@ -1,16 +1,16 @@
-%global git_ref 45ddcb7265075552902d53f439fcca7dfacef960
+%global git_ref 3712216475faf3d6257c19acc69775a9aabcc21f
 %global git_short_ref %(echo %{git_ref} | cut -b -7)
 
 Name:           unbreq
-Version:        0^20251703.%{git_short_ref}
+Version:        0^20250327.%{git_short_ref}
 Release:        %autorelease
-Summary:        Mock plugin - detector uf unneeded BuildRequires
+Summary:        Mock plugin - detector of unneeded BuildRequires
 License:        Apache-2.0
 URL:            https://github.com/mkoncek/unbreq
 
 Source0:        https://github.com/mkoncek/unbreq/archive/%{git_ref}.tar.gz#/%{name}-%{version}.tar.gz
 
-BuildRequires:  gcc-c++
+BuildRequires:  gcc
 BuildRequires:  make
 
 BuildRequires:  python3

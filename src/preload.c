@@ -4,26 +4,22 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <errno.h>
 
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <spawn.h>
 
-#include <errno.h>
-#include <stdio.h>
-
 #include <linux/limits.h>
 
-// #define TRACE fprintf(stderr, "[DEBUG] %s\n", __func__)
-#define TRACE ;
+extern void record_path(const char* path);
+extern void record_fd(int fd);
+extern void record_openat_path(int fd, const char* file);
+extern void record_path_search(const char* file);
 
-static const char* static_output_path = NULL;
-static FILE* static_output = NULL;
-static __thread char static_curdir[PATH_MAX] = {};
-static __thread char static_link[32] = {};
-static __thread char static_resolved[PATH_MAX] = {};
-static __thread char* static_argv[4096] = {};
+static _Thread_local char* static_argv[4096] = {};
 
 #define DECLARE_FUNCTION_POINTER(name) static __typeof__(name)* name##_orig = NULL
 #define ASSIGN_FUNCTION_POINTER(name) name##_orig = (__typeof__(name##_orig))dlsym(RTLD_NEXT, #name)
@@ -64,133 +60,10 @@ static void constructor(void)
 	
 	ASSIGN_FUNCTION_POINTER(posix_spawn);
 	ASSIGN_FUNCTION_POINTER(posix_spawnp);
-	
-	static_output_path = getenv("UNBREQ_OUTPUT_PATH");
-	if (static_output_path == NULL)
-	{
-		fprintf(stderr, "[ERROR] unbreq plugin: UNBREQ_OUTPUT_PATH is not set\n");
-		exit(127);
-	}
-	static_output = fopen(static_output_path, "a");
-	if (static_output == NULL)
-	{
-		fprintf(stderr, "[ERROR] unbreq plugin: file %s could not be opened\n", static_output_path);
-		exit(127);
-	}
-}
-
-__attribute__((destructor))
-static void destructor(void)
-{
-	if (static_output != NULL)
-	{
-		fclose(static_output);
-	}
-}
-
-static void record_path(const char* path)
-{
-	TRACE;
-	if (path == NULL)
-	{
-		return;
-	}
-	if (path[0] != '/')
-	{
-		if (getcwd(static_curdir, sizeof(static_curdir)) == NULL)
-		{
-			return;
-		}
-		fprintf(static_output, "%s/%s\n", static_curdir, path);
-	}
-	else
-	{
-		fprintf(static_output, "%s\n", path);
-	}
-}
-
-static void record_fd(int fd)
-{
-	TRACE;
-	snprintf(static_link, sizeof(static_link), "/proc/self/fd/%d", fd);
-	ssize_t len = readlink(static_link, static_resolved, sizeof(static_resolved) - 1);
-	if (len > 0)
-	{
-		static_resolved[len] = '\0';
-		fprintf(static_output, "%s\n", static_resolved);
-	}
-}
-
-static void record_openat_path(int fd, const char* file)
-{
-	TRACE;
-	if (file == NULL)
-	{
-		return;
-	}
-	if (file[0] == '/')
-	{
-		fprintf(static_output, "%s\n", file);
-	}
-	else if (fd == AT_FDCWD)
-	{
-		if (getcwd(static_curdir, sizeof(static_curdir)) == NULL)
-		{
-			return;
-		}
-		fprintf(static_output, "%s/%s\n", static_curdir, file);
-	}
-	else
-	{
-		snprintf(static_link, sizeof(static_link), "/proc/self/fd/%d", fd);
-		ssize_t len = readlink(static_link, static_resolved, sizeof(static_resolved) - 1);
-		if (len > 0)
-		{
-			static_resolved[len] = '\0';
-			fprintf(static_output, "%s/%s\n", static_resolved, file);
-		}
-	}
-}
-
-static void record_path_search(const char* file)
-{
-	TRACE;
-	if (file == NULL)
-	{
-		return;
-	}
-	if (strchr(file, '/') != NULL)
-	{
-		record_path(file);
-		return;
-	}
-	const char* path_env = getenv("PATH");
-	if (path_env == NULL)
-	{
-		return;
-	}
-	char* path_copy = strdup(path_env);
-	if (path_copy == NULL)
-	{
-		return;
-	}
-	char* saveptr = NULL;
-	for (char* dir = strtok_r(path_copy, ":", &saveptr); dir != NULL; dir = strtok_r(NULL, ":", &saveptr))
-	{
-		snprintf(static_resolved, sizeof(static_resolved), "%s/%s", dir, file);
-		if (access(static_resolved, X_OK) == 0)
-		{
-			fprintf(static_output, "%s\n", static_resolved);
-			free(path_copy);
-			return;
-		}
-	}
-	free(path_copy);
 }
 
 int open(const char* file, int oflag, ...)
 {
-	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -205,7 +78,6 @@ int open(const char* file, int oflag, ...)
 
 int open64(const char* file, int oflag, ...)
 {
-	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -220,7 +92,6 @@ int open64(const char* file, int oflag, ...)
 
 int openat(int fd, const char* file, int oflag, ...)
 {
-	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -235,7 +106,6 @@ int openat(int fd, const char* file, int oflag, ...)
 
 int openat64(int fd, const char* file, int oflag, ...)
 {
-	TRACE;
 	mode_t mode = 0;
 	if (oflag & (O_CREAT | __O_TMPFILE))
 	{
@@ -250,40 +120,33 @@ int openat64(int fd, const char* file, int oflag, ...)
 
 int execve(const char* path, char* const argv[], char* const envp[])
 {
-	TRACE;
 	record_path(path);
-	fflush(static_output);
 	return execve_orig(path, argv, envp);
 }
 
 int fexecve(int fd, char* const argv[], char* const envp[])
 {
-	TRACE;
 	record_fd(fd);
-	fflush(static_output);
 	return fexecve_orig(fd, argv, envp);
 }
 
 int execv(const char* path, char* const argv[])
 {
-	TRACE;
 	record_path(path);
-	fflush(static_output);
 	return execv_orig(path, argv);
 }
 
 int execle(const char* path, const char* arg, ...)
 {
-	TRACE;
-	va_list ap;
-	va_start(ap, arg);
+	va_list args;
+	va_start(args, arg);
 	size_t argc = 1;
-	while (va_arg(ap, const char*) != NULL)
+	while (va_arg(args, const char*) != NULL)
 	{
 		argc++;
 	}
-	char* const* envp = va_arg(ap, char* const*);
-	va_end(ap);
+	char* const* envp = va_arg(args, char* const*);
+	va_end(args);
 	
 	if (argc + 1 > sizeof(static_argv) / sizeof(static_argv[0]))
 	{
@@ -291,30 +154,28 @@ int execle(const char* path, const char* arg, ...)
 		return -1;
 	}
 	static_argv[0] = (char*)arg;
-	va_start(ap, arg);
+	va_start(args, arg);
 	for (size_t i = 1; i < argc; i++)
 	{
-		static_argv[i] = va_arg(ap, char*);
+		static_argv[i] = va_arg(args, char*);
 	}
 	static_argv[argc] = NULL;
-	va_end(ap);
+	va_end(args);
 	
 	record_path(path);
-	fflush(static_output);
 	return execve_orig(path, static_argv, envp);
 }
 
 int execl(const char* path, const char* arg, ...)
 {
-	TRACE;
-	va_list ap;
-	va_start(ap, arg);
+	va_list args;
+	va_start(args, arg);
 	size_t argc = 1;
-	while (va_arg(ap, const char*) != NULL)
+	while (va_arg(args, const char*) != NULL)
 	{
 		argc++;
 	}
-	va_end(ap);
+	va_end(args);
 	
 	if (argc + 1 > sizeof(static_argv) / sizeof(static_argv[0]))
 	{
@@ -322,38 +183,34 @@ int execl(const char* path, const char* arg, ...)
 		return -1;
 	}
 	static_argv[0] = (char*)arg;
-	va_start(ap, arg);
+	va_start(args, arg);
 	for (size_t i = 1; i < argc; i++)
 	{
-		static_argv[i] = va_arg(ap, char*);
+		static_argv[i] = va_arg(args, char*);
 	}
 	static_argv[argc] = NULL;
-	va_end(ap);
+	va_end(args);
 	
 	record_path(path);
-	fflush(static_output);
 	return execv_orig(path, static_argv);
 }
 
 int execvp(const char* file, char* const argv[])
 {
-	TRACE;
 	record_path_search(file);
-	fflush(static_output);
 	return execvp_orig(file, argv);
 }
 
 int execlp(const char* file, const char* arg, ...)
 {
-	TRACE;
-	va_list ap;
-	va_start(ap, arg);
+	va_list args;
+	va_start(args, arg);
 	size_t argc = 1;
-	while (va_arg(ap, const char*) != NULL)
+	while (va_arg(args, const char*) != NULL)
 	{
 		argc++;
 	}
-	va_end(ap);
+	va_end(args);
 	
 	if (argc + 1 > sizeof(static_argv) / sizeof(static_argv[0]))
 	{
@@ -361,24 +218,21 @@ int execlp(const char* file, const char* arg, ...)
 		return -1;
 	}
 	static_argv[0] = (char*)arg;
-	va_start(ap, arg);
+	va_start(args, arg);
 	for (size_t i = 1; i < argc; i++)
 	{
-		static_argv[i] = va_arg(ap, char*);
+		static_argv[i] = va_arg(args, char*);
 	}
 	static_argv[argc] = NULL;
-	va_end(ap);
+	va_end(args);
 	
 	record_path_search(file);
-	fflush(static_output);
 	return execvp_orig(file, static_argv);
 }
 
 int execvpe(const char* file, char* const argv[], char* const envp[])
 {
-	TRACE;
 	record_path_search(file);
-	fflush(static_output);
 	return execvpe_orig(file, argv, envp);
 }
 
@@ -387,7 +241,6 @@ int posix_spawn(pid_t* pid, const char* path,
 	const posix_spawnattr_t* attrp,
 	char* const argv[], char* const envp[])
 {
-	TRACE;
 	record_path(path);
 	return posix_spawn_orig(pid, path, file_actions, attrp, argv, envp);
 }
@@ -397,7 +250,6 @@ int posix_spawnp(pid_t* pid, const char* file,
 	const posix_spawnattr_t* attrp,
 	char* const argv[], char* const envp[])
 {
-	TRACE;
 	record_path_search(file);
 	return posix_spawnp_orig(pid, file, file_actions, attrp, argv, envp);
 }
