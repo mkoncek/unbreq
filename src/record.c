@@ -1,8 +1,10 @@
 #define _GNU_SOURCE
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <stdio.h>
 #include <limits.h>
 
@@ -20,28 +22,52 @@ static _Thread_local char static_curdir[PATH_MAX] = {};
 static _Thread_local char static_link[32] = {};
 static _Thread_local char static_resolved[PATH_MAX] = {};
 
+__attribute__((format(printf, 1, 2), noreturn))
+static void exit_with_error(const char* fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	fputs("[ERROR] unbreq plugin: ", stderr);
+	vfprintf(stderr, fmt, args);
+	fputs("\n", stderr);
+	va_end(args);
+	exit(127);
+}
+
 __attribute__((constructor))
 static void constructor(void)
 {
 	static_output_fd_env = getenv("UNBREQ_OUTPUT_FD");
 	if (static_output_fd_env == NULL)
 	{
-		fprintf(stderr, "[ERROR] unbreq plugin: UNBREQ_OUTPUT_FD is not set\n");
-		exit(127);
+		exit_with_error("UNBREQ_OUTPUT_FD is not set");
 	}
 	static_output_fd = atoi(static_output_fd_env);
 	if (static_output_fd == 0)
 	{
-		fprintf(stderr, "[ERROR] unbreq plugin: unable to read number from UNBREQ_OUTPUT_FD: %s\n", static_output_fd_env);
-		exit(127);
+		exit_with_error("unable to read number from UNBREQ_OUTPUT_FD: %s", static_output_fd_env);
 	}
 }
 
-#define RECORD_OUTPUT(...) do {\
-	flock(static_output_fd, LOCK_EX);\
-	dprintf(static_output_fd, __VA_ARGS__);\
-	flock(static_output_fd, LOCK_UN);\
-} while (0)
+__attribute__((format(printf, 1, 2)))
+static void record_output(const char* fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	if (flock(static_output_fd, LOCK_EX))
+	{
+		exit_with_error("flock(LOCK_EX) failed on fd %d: %s", static_output_fd, strerror(errno));
+	}
+	if (vdprintf(static_output_fd, fmt, args) < 0)
+	{
+		exit_with_error("vdprintf failed on fd %d: %s", static_output_fd, strerror(errno));
+	}
+	if (flock(static_output_fd, LOCK_UN))
+	{
+		exit_with_error("flock(LOCK_UN) failed on fd %d: %s", static_output_fd, strerror(errno));
+	}
+	va_end(args);
+}
 
 void record_path(const char* path)
 {
@@ -55,11 +81,11 @@ void record_path(const char* path)
 		{
 			return;
 		}
-		RECORD_OUTPUT("%s/%s\n", static_curdir, path);
+		record_output("%s/%s\n", static_curdir, path);
 	}
 	else
 	{
-		RECORD_OUTPUT("%s\n", path);
+		record_output("%s\n", path);
 	}
 }
 
@@ -69,7 +95,7 @@ void record_fd(int fd)
 	ssize_t len = readlink(static_link, static_resolved, sizeof(static_resolved));
 	if (len > 0 && len <= INT_MAX)
 	{
-		RECORD_OUTPUT("%.*s\n", (int)len, static_resolved);
+		record_output("%.*s\n", (int)len, static_resolved);
 	}
 }
 
@@ -81,7 +107,7 @@ void record_openat_path(int fd, const char* file)
 	}
 	if (file[0] == '/')
 	{
-		RECORD_OUTPUT("%s\n", file);
+		record_output("%s\n", file);
 	}
 	else if (fd == AT_FDCWD)
 	{
@@ -89,7 +115,7 @@ void record_openat_path(int fd, const char* file)
 		{
 			return;
 		}
-		RECORD_OUTPUT("%s/%s\n", static_curdir, file);
+		record_output("%s/%s\n", static_curdir, file);
 	}
 	else
 	{
@@ -97,7 +123,7 @@ void record_openat_path(int fd, const char* file)
 		ssize_t len = readlink(static_link, static_resolved, sizeof(static_resolved));
 		if (len > 0 && len <= INT_MAX)
 		{
-			RECORD_OUTPUT("%.*s/%s\n", (int)len, static_resolved, file);
+			record_output("%.*s/%s\n", (int)len, static_resolved, file);
 		}
 	}
 }
@@ -129,7 +155,7 @@ void record_path_search(const char* file)
 		snprintf(static_resolved, sizeof(static_resolved), "%s/%s", dir, file);
 		if (access(static_resolved, X_OK) == 0)
 		{
-			RECORD_OUTPUT("%s\n", static_resolved);
+			record_output("%s\n", static_resolved);
 			free(path_copy);
 			return;
 		}
