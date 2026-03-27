@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <spawn.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -41,6 +42,9 @@ DECLARE_FUNCTION_POINTER(execvp);
 DECLARE_FUNCTION_POINTER(execlp);
 DECLARE_FUNCTION_POINTER(execvpe);
 
+DECLARE_FUNCTION_POINTER(posix_spawn);
+DECLARE_FUNCTION_POINTER(posix_spawnp);
+
 __attribute__((constructor))
 static void constructor(void)
 {
@@ -57,6 +61,9 @@ static void constructor(void)
 	ASSIGN_FUNCTION_POINTER(execvp);
 	ASSIGN_FUNCTION_POINTER(execlp);
 	ASSIGN_FUNCTION_POINTER(execvpe);
+	
+	ASSIGN_FUNCTION_POINTER(posix_spawn);
+	ASSIGN_FUNCTION_POINTER(posix_spawnp);
 	
 	static_output_path = getenv("UNBREQ_OUTPUT_PATH");
 	if (static_output_path == NULL)
@@ -373,4 +380,24 @@ int execvpe(const char* file, char* const argv[], char* const envp[])
 	record_path_search(file);
 	fflush(static_output);
 	return execvpe_orig(file, argv, envp);
+}
+
+int posix_spawn(pid_t* pid, const char* path,
+	const posix_spawn_file_actions_t* file_actions,
+	const posix_spawnattr_t* attrp,
+	char* const argv[], char* const envp[])
+{
+	TRACE;
+	record_path(path);
+	return posix_spawn_orig(pid, path, file_actions, attrp, argv, envp);
+}
+
+int posix_spawnp(pid_t* pid, const char* file,
+	const posix_spawn_file_actions_t* file_actions,
+	const posix_spawnattr_t* attrp,
+	char* const argv[], char* const envp[])
+{
+	TRACE;
+	record_path_search(file);
+	return posix_spawnp_orig(pid, file, file_actions, attrp, argv, envp);
 }
