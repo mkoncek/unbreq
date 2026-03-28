@@ -3,8 +3,6 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include <errno.h>
 
 #include <dlfcn.h>
@@ -14,10 +12,10 @@
 
 #include <linux/limits.h>
 
-extern void record_path(const char* path);
-extern void record_fd(int fd);
-extern void record_openat_path(int fd, const char* file);
-extern void record_path_search(const char* file);
+__attribute__((visibility("hidden"))) extern void record_path(const char* path);
+__attribute__((visibility("hidden"))) extern void record_fd(int fd);
+__attribute__((visibility("hidden"))) extern void record_openat_path(int fd, const char* file);
+__attribute__((visibility("hidden"))) extern void record_path_search(const char* file);
 
 static _Thread_local char* static_argv[4096] = {};
 

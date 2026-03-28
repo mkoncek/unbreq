@@ -13,14 +13,23 @@
 #include <unistd.h>
 #include <spawn.h>
 
-#include <sys/file.h>
 #include <linux/limits.h>
 
 static const char* static_output_fd_env = NULL;
 static int static_output_fd = 0;
-static _Thread_local char static_curdir[PATH_MAX] = {};
-static _Thread_local char static_link[32] = {};
-static _Thread_local char static_resolved[PATH_MAX] = {};
+static _Thread_local char static_buffer[PATH_MAX] = {};
+static _Thread_local char static_link_buffer[32] = "/proc/self/fd/";
+
+__attribute__((format(printf, 1, 2)))
+static void log_warning(const char* fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	fputs("[WARNING] unbreq plugin: ", stderr);
+	vfprintf(stderr, fmt, args);
+	fputs("\n", stderr);
+	va_end(args);
+}
 
 __attribute__((format(printf, 1, 2), noreturn))
 static void exit_with_error(const char* fmt, ...)
@@ -49,24 +58,77 @@ static void constructor(void)
 	}
 }
 
-__attribute__((format(printf, 1, 2)))
-static void record_output(const char* fmt, ...)
+static int buffer_check_size(int length)
 {
-	va_list args;
-	va_start(args, fmt);
-	if (flock(static_output_fd, LOCK_EX))
+	if (length < 0)
 	{
-		exit_with_error("flock(LOCK_EX) failed on fd %d: %s", static_output_fd, strerror(errno));
+		log_warning("invalid data length for buffer: %d", length);
+		return 0;
 	}
-	if (vdprintf(static_output_fd, fmt, args) < 0)
+	if (length > (int)sizeof(static_buffer))
 	{
-		exit_with_error("vdprintf failed on fd %d: %s", static_output_fd, strerror(errno));
+		log_warning("data length for buffer is loo large: %d", length);
+		return 0;
 	}
-	if (flock(static_output_fd, LOCK_UN))
+	return 1;
+}
+
+static int buffer_store_fd(int fd)
+{
+	if (fd < 0 || fd > 9999)
 	{
-		exit_with_error("flock(LOCK_UN) failed on fd %d: %s", static_output_fd, strerror(errno));
+		exit_with_error("invalid file descriptor value: %d", fd);
 	}
-	va_end(args);
+	const int length = sizeof("/proc/self/fd/") - 1;
+	int digits = 1;
+	for (int n = 10; n <= fd; n *= 10)
+	{
+		++digits;
+	}
+	for (int n = digits; n != 0; --n)
+	{
+		static_link_buffer[length - 1 + n] = '0' + (char)(fd % 10);
+		fd /= 10;
+	}
+	static_link_buffer[length + digits] = '\0';
+	return length + digits;
+}
+
+static int buffer_readlink(int fd)
+{
+	buffer_store_fd(fd);
+	ssize_t length = readlink(static_link_buffer, static_buffer, sizeof(static_buffer));
+	if (length == -1)
+	{
+		log_warning("readlink on %d returned error: %s", fd, strerror(errno));
+	}
+	return (int)length;
+}
+
+static int buffer_store_cwd()
+{
+	int result = 0;
+	if (getcwd(static_buffer, sizeof(static_buffer)) == NULL)
+	{
+		log_warning("getcwd returned NULL: %s", strerror(errno));
+		return -1;
+	}
+	result = (int)strlen(static_buffer);
+	static_buffer[result] = '/';
+	return result + 1;
+}
+
+static void buffer_record_output(int length)
+{
+	if (buffer_check_size(length + 1))
+	{
+		static_buffer[length] = '\n';
+		++length;
+		if (write(static_output_fd, static_buffer, (size_t)length) == -1)
+		{
+			log_warning("write failed on fd %d: %s", static_output_fd, strerror(errno));
+		}
+	}
 }
 
 void record_path(const char* path)
@@ -75,90 +137,95 @@ void record_path(const char* path)
 	{
 		return;
 	}
+	int pos = 0;
+	int path_length = (int)strlen(path);
 	if (path[0] != '/')
 	{
-		if (getcwd(static_curdir, sizeof(static_curdir)) == NULL)
+		if ((pos = buffer_store_cwd()) == -1)
 		{
 			return;
 		}
-		record_output("%s/%s\n", static_curdir, path);
 	}
-	else
-	{
-		record_output("%s\n", path);
-	}
+	memcpy(static_buffer + pos, path, (size_t)path_length);
+	pos += path_length;
+	buffer_record_output(pos);
 }
 
 void record_fd(int fd)
 {
-	snprintf(static_link, sizeof(static_link), "/proc/self/fd/%d", fd);
-	ssize_t len = readlink(static_link, static_resolved, sizeof(static_resolved));
-	if (len > 0 && len <= INT_MAX)
+	int length = buffer_readlink(fd);
+	if (length != -1)
 	{
-		record_output("%.*s\n", (int)len, static_resolved);
+		buffer_record_output(length);
 	}
 }
 
-void record_openat_path(int fd, const char* file)
+void record_openat_path(int fd, const char* path)
 {
-	if (file == NULL)
+	if (path == NULL)
 	{
 		return;
 	}
-	if (file[0] == '/')
+	int path_length = (int)strlen(path);
+	if (path[0] == '/')
 	{
-		record_output("%s\n", file);
+		memcpy(static_buffer, path, (size_t)path_length);
+		buffer_record_output(path_length);
 	}
 	else if (fd == AT_FDCWD)
 	{
-		if (getcwd(static_curdir, sizeof(static_curdir)) == NULL)
+		int pos = buffer_store_cwd();
+		if (pos == -1)
 		{
 			return;
 		}
-		record_output("%s/%s\n", static_curdir, file);
+		memcpy(static_buffer + pos, path, (size_t)path_length);
+		buffer_record_output(pos + path_length);
 	}
 	else
 	{
-		snprintf(static_link, sizeof(static_link), "/proc/self/fd/%d", fd);
-		ssize_t len = readlink(static_link, static_resolved, sizeof(static_resolved));
-		if (len > 0 && len <= INT_MAX)
+		int length = buffer_readlink(fd);
+		if (length != -1)
 		{
-			record_output("%.*s/%s\n", (int)len, static_resolved, file);
+			static_buffer[length] = '/';
+			++length;
+			memcpy(static_buffer + length, path, (size_t)path_length);
+			length += path_length;
+			buffer_record_output((int)length);
 		}
 	}
 }
 
-void record_path_search(const char* file)
+void record_path_search(const char* path)
 {
-	if (file == NULL)
+	if (path == NULL)
 	{
 		return;
 	}
-	if (strchr(file, '/') != NULL)
+	if (strchr(path, '/') != NULL)
 	{
-		record_path(file);
-		return;
+		return record_path(path);
 	}
+	int path_length = (int)strlen(path);
 	const char* path_env = getenv("PATH");
-	if (path_env == NULL)
+	if (path_env != NULL)
 	{
-		return;
-	}
-	char* path_copy = strdup(path_env);
-	if (path_copy == NULL)
-	{
-		return;
-	}
-	char* saveptr = NULL;
-	for (char* dir = strtok_r(path_copy, ":", &saveptr); dir != NULL; dir = strtok_r(NULL, ":", &saveptr))
-	{
-		snprintf(static_resolved, sizeof(static_resolved), "%s/%s", dir, file);
-		if (access(static_resolved, X_OK) == 0)
+		for (const char* entry_end = path_env; (entry_end = strchr(path_env, ':')) != NULL; path_env = entry_end + 1)
 		{
-			record_output("%s\n", static_resolved);
-			free(path_copy);
-			return;
+			int length = (int)(entry_end - path_env);
+			if (length > 0)
+			{
+				memcpy(static_buffer, path_env, (size_t)length);
+				static_buffer[length] = '/';
+				++length;
+				memcpy(static_buffer + length, path, (size_t)path_length);
+				length += path_length;
+				static_buffer[length] = '\0';
+				if (access(static_buffer, X_OK) == 0)
+				{
+					return buffer_record_output(length);
+				}
+			}
 		}
 	}
-	free(path_copy);
 }

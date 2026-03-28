@@ -3,5 +3,6 @@
 -Wall
 -Wextra
 -Wno-varargs
+-Wconversion
 
 -pthread
