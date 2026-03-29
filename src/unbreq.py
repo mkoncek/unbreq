@@ -68,12 +68,8 @@ class Unbreq:
         self.original_rpmbuild_command: str = self.config["rpmbuild_command"]
         self.rpm_command: list[str] = []
         self.dnf_command: list[str] = []
-        config_exclude_accessed_files = (
-            self.config
-            .get("plugin_conf", {})
-            .get("unbreq_opts", {})
-            .get("exclude_accessed_files", [])
-        )
+        unbreq_opts = self.config.get("plugin_conf", {}).get("unbreq_opts", {})
+        config_exclude_accessed_files = unbreq_opts.get("exclude_accessed_files", [])
         if not isinstance(config_exclude_accessed_files, list):
             raise mockbuild.exception.ConfigError("unbreq plugin: expected configuration field "
                 f"`exclude_accessed_files` to be a list, but was {type(config_exclude_accessed_files)}"
@@ -187,7 +183,7 @@ class Unbreq:
         result: set[str] = set()
         packages = list(packages)
         if len(packages) != 0:
-            # Note that we expect this command to return 1.
+            # NOTE: We expect this command to return 1.
             output = self.check_output([*self.dnf_command,
                 "--setopt", "protected_packages=", "--assumeno", "remove", *packages],
                 expected_returncode = 1,
