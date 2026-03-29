@@ -20,9 +20,22 @@ static _Thread_local int static_buffer_end = 0;
 static _Thread_local char static_buffer[PATH_MAX] = {};
 static _Thread_local char static_link_buffer[32] = "/proc/self/fd/";
 
-#define B_ZERO "\0", 1
-#define B_SLASH "/", 1
-#define B_NEWLINE "\n", 1
+typedef struct
+{
+	const char* data;
+	int length;
+} buffer_chunk;
+
+static const buffer_chunk chunk_zero = {.data = "\0", .length = 1};
+static const buffer_chunk chunk_slash = {.data = "/", .length = 1};
+static const buffer_chunk chunk_newline = {.data = "\n", .length = 1};
+
+static buffer_chunk buffer_chunk_from(const char* data, int length)
+{
+	return (buffer_chunk) {
+		.data = data, .length = length,
+	};
+}
 
 __attribute__((format(printf, 1, 2)))
 static void log_warning(const char* fmt, ...)
@@ -62,11 +75,12 @@ static void constructor(void)
 	}
 }
 
-static _Bool buffer_push(int total_length, ...)
+static _Bool buffer_push(int n, const buffer_chunk* chunks)
 {
-	if (total_length < 0)
+	int total_length = 0;
+	for (int i = 0; i != n; ++i)
 	{
-		exit_with_error("invalid data length for buffer: %d", total_length);
+		total_length += (int)chunks[i].length;
 	}
 	if (static_buffer_end + total_length > (int)sizeof(static_buffer))
 	{
@@ -74,20 +88,15 @@ static _Bool buffer_push(int total_length, ...)
 		static_buffer_end = 0;
 		return 0;
 	}
-	
-	va_list args;
-	va_start(args, total_length);
-	while (total_length != 0)
+	for (int i = 0; i != n; ++i)
 	{
-		const char* data = va_arg(args, const char*);
-		const int length = va_arg(args, int);
-		memcpy(static_buffer + (size_t)static_buffer_end, data, (size_t)length);
-		static_buffer_end += length;
-		total_length -= length;
+		memcpy(static_buffer + (size_t)static_buffer_end, chunks[i].data, (size_t)chunks[i].length);
+		static_buffer_end += (int)chunks[i].length;
 	}
-	va_end(args);
 	return 1;
 }
+
+#define BUFFER_PUSH(...) buffer_push(sizeof((buffer_chunk[]){__VA_ARGS__}) / sizeof(buffer_chunk), (buffer_chunk[]){__VA_ARGS__})
 
 static int link_buffer_store_fd(int fd)
 {
@@ -159,7 +168,11 @@ void record_path(const char* path)
 	{
 		if (buffer_store_cwd())
 		{
-			buffer_push(1 + path_length + 1, B_SLASH, path, path_length, B_NEWLINE);
+			BUFFER_PUSH(
+				chunk_slash,
+				buffer_chunk_from(path, path_length),
+				chunk_newline,
+			);
 			buffer_record_output();
 		}
 	}
@@ -169,7 +182,7 @@ void record_fd(int fd)
 {
 	if (buffer_readlink(fd))
 	{
-		buffer_push(1, B_NEWLINE);
+		BUFFER_PUSH(chunk_newline);
 		buffer_record_output();
 	}
 }
@@ -183,20 +196,31 @@ void record_openat_path(int fd, const char* path)
 	int path_length = (int)strlen(path);
 	if (path[0] == '/')
 	{
-		buffer_push(path_length + 1, path, path_length, B_NEWLINE);
+		BUFFER_PUSH(
+			buffer_chunk_from(path, path_length),
+			chunk_newline,
+		);
 		buffer_record_output();
 	}
 	else if (fd == AT_FDCWD)
 	{
 		if (buffer_store_cwd())
 		{
-			buffer_push(1 + path_length + 1, B_SLASH, path, path_length, B_NEWLINE);
+			BUFFER_PUSH(
+				chunk_slash,
+				buffer_chunk_from(path, path_length),
+				chunk_newline,
+			);
 			buffer_record_output();
 		}
 	}
 	else if (buffer_readlink(fd))
 	{
-		buffer_push(1 + path_length + 1, B_SLASH, path, path_length, B_NEWLINE);
+		BUFFER_PUSH(
+			chunk_slash,
+			buffer_chunk_from(path, path_length),
+			chunk_newline,
+		);
 		buffer_record_output();
 	}
 }
@@ -229,13 +253,15 @@ void record_path_search(const char* path)
 				// PATH may contain relative paths.
 				if (path_env[0] != '/')
 				{
-					if (!(buffer_store_cwd() &&
-						buffer_push(1 + length + 1 + path_length + 1, B_SLASH, path_env, length, B_SLASH, path, path_length, B_ZERO)))
+					if (!(buffer_store_cwd() && BUFFER_PUSH(
+						chunk_slash, buffer_chunk_from(path_env, length),
+						chunk_slash, buffer_chunk_from(path, path_length), chunk_zero)))
 					{
 						break;
 					}
 				}
-				else if (!buffer_push(length + 1 + path_length + 1, path_env, length, B_SLASH, path, path_length, B_ZERO))
+				else if (!BUFFER_PUSH(buffer_chunk_from(path_env, length),
+					chunk_slash, buffer_chunk_from(path, path_length), chunk_zero))
 				{
 					break;
 				}
