@@ -6,7 +6,6 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
-#include <limits.h>
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -17,8 +16,13 @@
 
 static const char* static_output_fd_env = NULL;
 static int static_output_fd = 0;
+static _Thread_local int static_buffer_end = 0;
 static _Thread_local char static_buffer[PATH_MAX] = {};
 static _Thread_local char static_link_buffer[32] = "/proc/self/fd/";
+
+#define B_ZERO "\0", 1
+#define B_SLASH "/", 1
+#define B_NEWLINE "\n", 1
 
 __attribute__((format(printf, 1, 2)))
 static void log_warning(const char* fmt, ...)
@@ -58,22 +62,34 @@ static void constructor(void)
 	}
 }
 
-static int buffer_check_size(int length)
+static _Bool buffer_push(int total_length, ...)
 {
-	if (length < 0)
+	if (total_length < 0)
 	{
-		log_warning("invalid data length for buffer: %d", length);
+		exit_with_error("invalid data length for buffer: %d", total_length);
+	}
+	if (static_buffer_end + total_length > (int)sizeof(static_buffer))
+	{
+		log_warning("data length for buffer is too large: %d", static_buffer_end + total_length);
+		static_buffer_end = 0;
 		return 0;
 	}
-	if (length > (int)sizeof(static_buffer))
+	
+	va_list args;
+	va_start(args, total_length);
+	while (total_length != 0)
 	{
-		log_warning("data length for buffer is loo large: %d", length);
-		return 0;
+		const char* data = va_arg(args, const char*);
+		const int length = va_arg(args, int);
+		memcpy(static_buffer + (size_t)static_buffer_end, data, (size_t)length);
+		static_buffer_end += length;
+		total_length -= length;
 	}
+	va_end(args);
 	return 1;
 }
 
-static int buffer_store_fd(int fd)
+static int link_buffer_store_fd(int fd)
 {
 	if (fd < 0 || fd > 9999)
 	{
@@ -94,41 +110,42 @@ static int buffer_store_fd(int fd)
 	return length + digits;
 }
 
-static int buffer_readlink(int fd)
+static _Bool buffer_readlink(int fd)
 {
-	buffer_store_fd(fd);
+	link_buffer_store_fd(fd);
 	ssize_t length = readlink(static_link_buffer, static_buffer, sizeof(static_buffer));
 	if (length == -1)
 	{
 		log_warning("readlink on %d returned error: %s", fd, strerror(errno));
+		return 0;
 	}
-	return (int)length;
+	else if (length >= (ssize_t)sizeof(static_buffer))
+	{
+		log_warning("readlink on %d: file name too long", fd);
+		return 0;
+	}
+	static_buffer_end = (int)length;
+	return 1;
 }
 
-static int buffer_store_cwd()
+static _Bool buffer_store_cwd()
 {
-	int result = 0;
 	if (getcwd(static_buffer, sizeof(static_buffer)) == NULL)
 	{
 		log_warning("getcwd returned NULL: %s", strerror(errno));
-		return -1;
+		return 0;
 	}
-	result = (int)strlen(static_buffer);
-	static_buffer[result] = '/';
-	return result + 1;
+	static_buffer_end = (int)strlen(static_buffer);
+	return 1;
 }
 
-static void buffer_record_output(int length)
+static void buffer_record_output(void)
 {
-	if (buffer_check_size(length + 1))
+	if (write(static_output_fd, static_buffer, (size_t)static_buffer_end) == -1)
 	{
-		static_buffer[length] = '\n';
-		++length;
-		if (write(static_output_fd, static_buffer, (size_t)length) == -1)
-		{
-			log_warning("write failed on fd %d: %s", static_output_fd, strerror(errno));
-		}
+		log_warning("write failed on fd %d: %s", static_output_fd, strerror(errno));
 	}
+	static_buffer_end = 0;
 }
 
 void record_path(const char* path)
@@ -137,26 +154,23 @@ void record_path(const char* path)
 	{
 		return;
 	}
-	int pos = 0;
 	int path_length = (int)strlen(path);
 	if (path[0] != '/')
 	{
-		if ((pos = buffer_store_cwd()) == -1)
+		if (buffer_store_cwd())
 		{
-			return;
+			buffer_push(1 + path_length + 1, B_SLASH, path, path_length, B_NEWLINE);
+			buffer_record_output();
 		}
 	}
-	memcpy(static_buffer + pos, path, (size_t)path_length);
-	pos += path_length;
-	buffer_record_output(pos);
 }
 
 void record_fd(int fd)
 {
-	int length = buffer_readlink(fd);
-	if (length != -1)
+	if (buffer_readlink(fd))
 	{
-		buffer_record_output(length);
+		buffer_push(1, B_NEWLINE);
+		buffer_record_output();
 	}
 }
 
@@ -169,30 +183,21 @@ void record_openat_path(int fd, const char* path)
 	int path_length = (int)strlen(path);
 	if (path[0] == '/')
 	{
-		memcpy(static_buffer, path, (size_t)path_length);
-		buffer_record_output(path_length);
+		buffer_push(path_length + 1, path, path_length, B_NEWLINE);
+		buffer_record_output();
 	}
 	else if (fd == AT_FDCWD)
 	{
-		int pos = buffer_store_cwd();
-		if (pos == -1)
+		if (buffer_store_cwd())
 		{
-			return;
+			buffer_push(1 + path_length + 1, B_SLASH, path, path_length, B_NEWLINE);
+			buffer_record_output();
 		}
-		memcpy(static_buffer + pos, path, (size_t)path_length);
-		buffer_record_output(pos + path_length);
 	}
-	else
+	else if (buffer_readlink(fd))
 	{
-		int length = buffer_readlink(fd);
-		if (length != -1)
-		{
-			static_buffer[length] = '/';
-			++length;
-			memcpy(static_buffer + length, path, (size_t)path_length);
-			length += path_length;
-			buffer_record_output((int)length);
-		}
+		buffer_push(1 + path_length + 1, B_SLASH, path, path_length, B_NEWLINE);
+		buffer_record_output();
 	}
 }
 
@@ -210,20 +215,38 @@ void record_path_search(const char* path)
 	const char* path_env = getenv("PATH");
 	if (path_env != NULL)
 	{
-		for (const char* entry_end = path_env; (entry_end = strchr(path_env, ':')) != NULL; path_env = entry_end + 1)
+		for (const char* entry_end = path_env; *entry_end != '\0'; path_env = entry_end + 1)
 		{
+			entry_end = path_env;
+			while (*entry_end != '\0' && *entry_end != ':')
+			{
+				++entry_end;
+			}
+			
 			int length = (int)(entry_end - path_env);
 			if (length > 0)
 			{
-				memcpy(static_buffer, path_env, (size_t)length);
-				static_buffer[length] = '/';
-				++length;
-				memcpy(static_buffer + length, path, (size_t)path_length);
-				length += path_length;
-				static_buffer[length] = '\0';
+				// PATH may contain relative paths.
+				if (path_env[0] != '/')
+				{
+					if (!(buffer_store_cwd() &&
+						buffer_push(1 + length + 1 + path_length + 1, B_SLASH, path_env, length, B_SLASH, path, path_length, B_ZERO)))
+					{
+						break;
+					}
+				}
+				else if (!buffer_push(length + 1 + path_length + 1, path_env, length, B_SLASH, path, path_length, B_ZERO))
+				{
+					break;
+				}
+				
+				// Null-terminator is not path of the path name.
+				--static_buffer_end;
 				if (access(static_buffer, X_OK) == 0)
 				{
-					return buffer_record_output(length);
+					// Replace null-terminator with a new line.
+					static_buffer[static_buffer_end] = '\n';
+					return buffer_record_output();
 				}
 			}
 		}
