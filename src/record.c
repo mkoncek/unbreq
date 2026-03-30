@@ -16,6 +16,7 @@
 
 static const char* static_output_fd_env = NULL;
 static int static_output_fd = 0;
+
 static _Thread_local int static_buffer_end = 0;
 static _Thread_local char static_buffer[PATH_MAX] = {};
 static _Thread_local char static_link_buffer[32] = "/proc/self/fd/";
@@ -75,6 +76,11 @@ static void constructor(void)
 	}
 }
 
+//! Push multiple data chunks ino the static buffer. If the buffer is too small,
+//! drop all the content and clear the buffer.
+//! @param n Number of chunks.
+//! @param chunks Array of chunks.
+//! @return True if the push operation succeeded, otherwise false.
 static _Bool buffer_push(int n, const buffer_chunk* chunks)
 {
 	int total_length = 0;
@@ -98,6 +104,10 @@ static _Bool buffer_push(int n, const buffer_chunk* chunks)
 
 #define BUFFER_PUSH(...) buffer_push(sizeof((buffer_chunk[]){__VA_ARGS__}) / sizeof(buffer_chunk), (buffer_chunk[]){__VA_ARGS__})
 
+//! Write the @p fd to the static link buffer for later use with `readlink`.
+//! Includes the null terminator.
+//! @param fd The file descriptor number to write.
+//! @return The total length of the string in the link buffer.
 static int link_buffer_store_fd(int fd)
 {
 	if (fd < 0 || fd > 9999)
@@ -119,6 +129,9 @@ static int link_buffer_store_fd(int fd)
 	return length + digits;
 }
 
+//! Resolve @p fd to a file path and store it in the static buffer.
+//! @param fd File descriptor to resolve.
+//! @return True on success, false otherwise.
 static _Bool buffer_readlink(int fd)
 {
 	link_buffer_store_fd(fd);
@@ -137,7 +150,9 @@ static _Bool buffer_readlink(int fd)
 	return 1;
 }
 
-static _Bool buffer_store_cwd()
+//! Get the current working directory and store it in the static buffer.
+//! @return True on success, false otherwise.
+static _Bool buffer_store_cwd(void)
 {
 	if (getcwd(static_buffer, sizeof(static_buffer)) == NULL)
 	{
@@ -148,6 +163,8 @@ static _Bool buffer_store_cwd()
 	return 1;
 }
 
+//! Write the content of the static buffer to the output file descriptor and
+//! clear the buffer.
 static void buffer_record_output(void)
 {
 	if (write(static_output_fd, static_buffer, (size_t)static_buffer_end) == -1)

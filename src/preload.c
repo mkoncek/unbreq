@@ -10,8 +10,6 @@
 #include <unistd.h>
 #include <spawn.h>
 
-#include <linux/limits.h>
-
 __attribute__((visibility("hidden"))) extern void record_path(const char* path);
 __attribute__((visibility("hidden"))) extern void record_fd(int fd);
 __attribute__((visibility("hidden"))) extern void record_openat_path(int fd, const char* file);
